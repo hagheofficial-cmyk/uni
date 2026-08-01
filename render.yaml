@@ -6,6 +6,8 @@ services:
     startCommand: python3 main.py
     healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.9"
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_USER_IDS
