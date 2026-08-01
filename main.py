@@ -20,8 +20,8 @@ from telegram.constants import ParseMode
 
 load_dotenv()
 BASE_DIR = Path(__file__).parent
-UPLOAD_FOLDER = BASE_DIR / "uploads"; UPLOAD_FOLDER.mkdir(exist_ok=True)
-DB_FILE = BASE_DIR / "database.json"
+UPLOAD_FOLDER = Path(os.getenv("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))); UPLOAD_FOLDER.mkdir(exist_ok=True)
+DB_FILE = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "database.json")))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",") if x.strip()]
@@ -342,9 +342,9 @@ def esc(s):
 def detect_url():
     for k in ["WEBAPP_URL", "RENDER_EXTERNAL_URL"]:
         v = os.getenv(k, "")
-        if v: return v
+        if v: return v.rstrip("/")
     v = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
-    return f"https://{v}" if v else ""
+    return f"https://{v}".rstrip("/") if v else ""
 
 def bot_username():
     return os.environ.get("BOT_USERNAME", "")
