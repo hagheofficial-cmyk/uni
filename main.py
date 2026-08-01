@@ -477,6 +477,7 @@ def admin_menu_kb():
         [btn("🗂 دسته‌بندی‌ها", "adm_cats"), btn("⚙️ تنظیمات", "adm_set"), btn("📣 پیام همگانی", "adm_bc")],
         [btn("👥 کاربران", "adm_users"), btn("🔔 اعلان‌ها", "adm_notifs"), btn("💬 پیام‌ها", "adm_support")],
         [btn("💰 کیف پول", "adm_wallet"), btn("👑 مدیران", "adm_admins")],
+        [btn("📥 بک‌اپ دیتابیس", "adm_backup"), btn("📤 بازگردانی بک‌اپ", "adm_restore")],
         [btn("✖️ بستن", "adm_close")],
     ])
 
@@ -635,8 +636,33 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; msg = update.message
     file = msg.document or (msg.photo[-1] if msg.photo else None) or msg.video or msg.voice
     if not file: return
-    fname = getattr(file, 'file_name', None) or f"file_{file.file_id[:8]}"
     tf = await ctx.bot.get_file(file.file_id)
+
+    # ── بازگردانی بک‌اپ دیتابیس (ادمین) ──
+    if is_admin(u.id) and admin_sessions.get(u.id, {}).get("state") == "adm_restore_db":
+        admin_sessions.pop(u.id, None)
+        try:
+            sp_temp = UPLOAD_FOLDER / f"restore_temp_{_uid()}.json"
+            await tf.download_to_drive(sp_temp)
+            with open(sp_temp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or "users" not in data or "orders" not in data:
+                await msg.reply_text("❌ فایل ارسال‌شده یک بک‌اپ معتبر دیتابیس نیست.")
+                if sp_temp.exists(): sp_temp.unlink()
+                return
+            _save(data)
+            if sp_temp.exists(): sp_temp.unlink()
+            await msg.reply_text(
+                "✅ دیتابیس با موفقیت بازگردانی شد!\n"
+                f"👥 تعداد کاربران بازیابی‌شده: {len(data.get('users', []))}\n"
+                f"📦 تعداد سفارش‌های بازیابی‌شده: {len(data.get('orders', []))}\n"
+                f"💰 تعداد کیف پول‌های بازیابی‌شده: {len(data.get('wallets', []))}",
+                reply_markup=main_kb(u.id)
+            )
+        except Exception as e:
+            await msg.reply_text(f"⚠️ خطا در بازگردانی بک‌اپ: {e}")
+        return
+    fname = getattr(file, 'file_name', None) or f"file_{file.file_id[:8]}"
     ext = Path(tf.file_path or "").suffix or (".jpg" if msg.photo else "")
     if not Path(fname).suffix: fname = f"{fname}{ext}"
 
@@ -1562,6 +1588,32 @@ async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try: await q.message.delete()
         except Exception:
             await q.answer(); await q.edit_message_text("بسته شد.")
+        return
+    if d == "adm_backup":
+        await q.answer("📥 در حال آماده‌سازی فایل پشتیبان...")
+        if DB_FILE.exists():
+            with open(DB_FILE, "rb") as fh:
+                cap = (
+                    "📥 فایل پشتیبان کامل دیتابیس ربات\n\n"
+                    "این فایل شامل کل کاربران، سفارش‌ها، کیف پول‌ها، تراکنش‌ها و تنظیمات است.\n"
+                    "برای بازگردانی اطلاعات، از دکمهٔ «📤 بازگردانی بک‌اپ» در منوی مدیریت استفاده کنید."
+                )
+                await ctx.bot.send_document(
+                    chat_id=u.id,
+                    document=fh,
+                    filename=f"backup_uni_{_now()[:10]}.json",
+                    caption=cap
+                )
+        else:
+            await ctx.bot.send_message(u.id, "⚠️ فایل دیتابیسی یافت نشد.")
+        return
+    if d == "adm_restore":
+        await q.answer()
+        admin_sessions[u.id] = {"state": "adm_restore_db"}
+        await safe_edit(q, text=(
+            "📤 بازگردانی بک‌اپ دیتابیس\n\n"
+            "لطفاً فایل بک‌اپ (`.json`) که قبلاً دریافت کرده‌اید را در همین چت ارسال کنید (یا /cancel):"
+        ))
         return
     if d == "adm_stats":
         await q.answer()
