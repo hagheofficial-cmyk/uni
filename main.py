@@ -44,7 +44,7 @@ def _default_db():
             "support_mode": "bot",
             "support_text": "برای ارتباط با پشتیبانی از روش‌های زیر استفاده کنید:",
             "referral_discount_percent": 10, "referral_reward": 50000, "referral_referee_reward": 50000,
-            "reward_code": "", "reward_amount": 50000,
+            "reward_code": "", "reward_amount": 50000, "webapp_html": "",
             "bank_card_number": "", "bank_card_holder": "", "bank_name": "", "bank_note": "",
         },
         "notifications": {
@@ -77,6 +77,307 @@ def _save(d):
 
 _uid = lambda: str(uuid.uuid4())[:10]
 _now = lambda: datetime.now().isoformat()
+
+DEFAULT_WEBAPP_HTML = """<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ارتباط با ما | مینی‌اپ آفلاین</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-color: #1f2937;
+            --primary: #3b82f6;
+            --secondary: #10b981;
+            --border: #e5e7eb;
+        }
+        body {
+            font-family: Tahoma, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 16px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 16px;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            font-size: 24px;
+            margin: 0 0 8px 0;
+            color: var(--primary);
+        }
+        .header p {
+            margin: 0;
+            color: #6b7280;
+            font-size: 14px;
+        }
+        .section {
+            margin-bottom: 24px;
+        }
+        .section h2 {
+            font-size: 18px;
+            margin-bottom: 12px;
+            color: #374151;
+            border-right: 4px solid var(--primary);
+            padding-right: 8px;
+        }
+        .contact-box {
+            background: #f9fafb;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .btn {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            text-decoration: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            text-align: center;
+            width: 100%;
+            box-sizing: border-box;
+            margin-top: 8px;
+        }
+        .btn-success {
+            background: var(--secondary);
+        }
+        .faq-item {
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 8px;
+        }
+        .faq-q {
+            font-weight: bold;
+            color: var(--text-color);
+        }
+        .faq-a {
+            color: #4b5563;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎓 ربات سفارش پروژه دانشگاهی</h1>
+            <p>صفحهٔ ارتباط با ما و راهنمای آفلاین</p>
+        </div>
+
+        <div class="section">
+            <h2>📞 اطلاعات پشتیبانی</h2>
+            <div class="contact-box">
+                <p><strong>📱 شماره تلفن پشتیبانی:</strong> {{PHONE}}</p>
+                <p><strong>💬 آیدی تلگرام پشتیبانی:</strong> @{{TELEGRAM}}</p>
+            </div>
+            <a href="https://t.me/{{TELEGRAM}}" class="btn">💬 ارسال پیام در تلگرام</a>
+        </div>
+
+        <div class="section">
+            <h2>📢 کانال رسمی ما</h2>
+            <div class="contact-box">
+                <p>برای مشاهده نمونه کارها، اطلاعیه‌ها و کدهای تخفیف، عضو کانال ما شوید:</p>
+            </div>
+            <a href="https://t.me/{{TELEGRAM}}" class="btn btn-success">🔔 ورود به کانال تلگرام</a>
+        </div>
+
+        <div class="section">
+            <h2>❓ سوالات متداول (آفلاین)</h2>
+            <div class="faq-item">
+                <div class="faq-q">۱. چگونه سفارش جدید ثبت کنم؟</div>
+                <div class="faq-a">از منوی اصلی ربات روی «📋 ثبت سفارش جدید» کلیک کنید، دسته‌بندی پروژه را انتخاب کرده و توضیحات و فایل‌های مدارک را آپلود کنید.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">۲. نحوه پرداخت به چه صورت است؟</div>
+                <div class="faq-a">پس از تایید قیمت، می‌توانید پیش‌پرداخت را واریز کرده و عکس رسید را در ربات بفرستید. همچنین می‌توانید از موجودی «💰 کیف پول» استفاده کنید.</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-q">۳. آیا امکان کار بدون اینترنت وجود دارد؟</div>
+                <div class="faq-a">بله! این صفحه HTML به صورت آفلاین روی دستگاه شما ذخیره می‌شود و همیشه قابل مشاهده است.</div>
+            </div>
+        </div>
+    </div>
+    <script>
+        if (window.Telegram && window.Telegram.WebApp) {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
+        }
+    </script>
+</body>
+</html>"""
+
+def get_webapp_url():
+    ext_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBAPP_URL")
+    if ext_url and ext_url.startswith("https://"):
+        return f"{ext_url.rstrip('/')}/webapp"
+    return "https://uni-1-6u0l.onrender.com/webapp"
+
+def generate_excel_report(filepath):
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    default_sheet = wb.active
+
+    header_font = Font(name="Tahoma", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    align_center = Alignment(horizontal="center", vertical="center")
+
+    # Sheet 1: Orders
+    ws_orders = wb.create_sheet(title="سفارش‌ها (Orders)")
+    ws_orders.views.sheetView[0].rightToLeft = True
+    orders_headers = [
+        "آیدی سفارش", "نام کاربر", "آیدی کاربر", "دسته‌بندی", "مبلغ کل (تومان)",
+        "پیش‌پرداخت (تومان)", "پرداخت نهایی (تومان)", "تخفیف (تومان)",
+        "وضعیت", "تاریخ ثبت", "توضیحات"
+    ]
+    ws_orders.append(orders_headers)
+    for col_num in range(1, len(orders_headers) + 1):
+        cell = ws_orders.cell(row=1, column=col_num)
+        cell.font = header_font; cell.fill = header_fill; cell.alignment = align_center
+
+    for o in order_all():
+        ws_orders.append([
+            o.get("id", ""),
+            o.get("first_name", "") or o.get("username", "") or "—",
+            str(o.get("user_id", "")),
+            o.get("category_name", ""),
+            o.get("price", 0),
+            o.get("advance_amount", 0),
+            o.get("final_amount", 0),
+            o.get("discount", 0),
+            STATUS_LABELS.get(o.get("status", ""), o.get("status", "")),
+            str(o.get("created_at", ""))[:16],
+            o.get("description", "") or "—"
+        ])
+
+    # Sheet 2: Users
+    ws_users = wb.create_sheet(title="کاربران (Users)")
+    ws_users.views.sheetView[0].rightToLeft = True
+    users_headers = [
+        "آیدی کاربر", "نام", "نام کاربری", "موجودی کیف پول (تومان)",
+        "تعداد سفارش‌ها", "کد معرف", "تاریخ عضویت"
+    ]
+    ws_users.append(users_headers)
+    for col_num in range(1, len(users_headers) + 1):
+        cell = ws_users.cell(row=1, column=col_num)
+        cell.font = header_font; cell.fill = header_fill; cell.alignment = align_center
+
+    for uu in user_all():
+        w = wallet_ensure(uu["id"])
+        u_orders = order_all(uid_=uu["id"])
+        ws_users.append([
+            str(uu.get("id", "")),
+            uu.get("first_name", "") or "—",
+            uu.get("username", "") or "—",
+            w.get("balance", 0),
+            len(u_orders),
+            str(uu.get("referred_by", "") or "—"),
+            str(uu.get("joined_at", ""))[:16]
+        ])
+
+    # Sheet 3: Payments & Deposits
+    ws_pays = wb.create_sheet(title="واریزی‌ها و پرداخت‌ها")
+    ws_pays.views.sheetView[0].rightToLeft = True
+    pays_headers = [
+        "آیدی پرداخت", "آیدی سفارش / تراکنش", "آیدی کاربر", "مبلغ (تومان)",
+        "نوع پرداخت", "وضعیت", "تأیید ادمین", "تاریخ ایجاد", "تاریخ تأیید"
+    ]
+    ws_pays.append(pays_headers)
+    for col_num in range(1, len(pays_headers) + 1):
+        cell = ws_pays.cell(row=1, column=col_num)
+        cell.font = header_font; cell.fill = header_fill; cell.alignment = align_center
+
+    for p in sorted(_db()["payments"], key=lambda x: x["created_at"], reverse=True):
+        pt_label = {"advance": "پیش‌پرداخت", "final": "تسویه نهایی", "topup": "شارژ کیف پول"}.get(p.get("payment_type"), p.get("payment_type", ""))
+        ws_pays.append([
+            p.get("id", ""),
+            str(p.get("order_id", "")),
+            str(p.get("user_id", "") or p.get("order_id", "")),
+            p.get("amount", 0),
+            pt_label,
+            PAY_LABEL.get(p.get("status", ""), p.get("status", "")),
+            "تأییدشده" if p.get("admin_approved") else ("ردشده" if p.get("admin_approved") is False else "در انتظار"),
+            str(p.get("created_at", ""))[:16],
+            str(p.get("approved_at", "") or "—")[:16]
+        ])
+
+    # Sheet 4: Categories
+    ws_cats = wb.create_sheet(title="دسته‌بندی‌ها (Categories)")
+    ws_cats.views.sheetView[0].rightToLeft = True
+    cats_headers = [
+        "آیدی دسته", "نام دسته", "قیمت (تومان)", "درصد پیش‌پرداخت (%)",
+        "وضعیت فعال/غیرفعال", "توضیحات"
+    ]
+    ws_cats.append(cats_headers)
+    for col_num in range(1, len(cats_headers) + 1):
+        cell = ws_cats.cell(row=1, column=col_num)
+        cell.font = header_font; cell.fill = header_fill; cell.alignment = align_center
+
+    for cc in cat_all(False):
+        ws_cats.append([
+            cc.get("id", ""),
+            cc.get("name", ""),
+            cc.get("price", 0),
+            cc.get("advance_percent", 50),
+            "فعال" if cc.get("active", True) else "غیرفعال",
+            cc.get("description", "") or "—"
+        ])
+
+    if default_sheet in wb.worksheets and len(wb.worksheets) > 1:
+        wb.remove(default_sheet)
+
+    for sheet in wb.worksheets:
+        for col in sheet.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_str = str(cell.value or "")
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+            sheet.column_dimensions[col_letter].width = max(max_len + 3, 14)
+
+    wb.save(filepath)
+    return filepath
+
+def wallet_set_balance(uid_, new_bal, desc="تنظیم موجودی توسط مدیریت"):
+    w = wallet_ensure(uid_)
+    db = _db()
+    for w_item in db["wallets"]:
+        try:
+            match = (int(w_item["user_id"]) == int(uid_))
+        except Exception:
+            match = (w_item["user_id"] == uid_)
+        if match:
+            old_bal = w_item["balance"]
+            w_item["balance"] = int(new_bal)
+            w_item.setdefault("transactions", []).append({
+                "type": "adjustment", "amount": int(new_bal) - old_bal,
+                "description": desc, "date": _now()
+            })
+            _save(db)
+            return w_item
+    return None
+
 
 async def safe_edit(q, text=None, reply_markup=None, caption=None):
     try:
@@ -638,6 +939,28 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not file: return
     tf = await ctx.bot.get_file(file.file_id)
 
+    # ── آپلود فایل HTML مینی‌اپ (ادمین) ──
+    if is_admin(u.id) and admin_sessions.get(u.id, {}).get("state") == "adm_upload_html":
+        admin_sessions.pop(u.id, None)
+        try:
+            sp_html = UPLOAD_FOLDER / f"webapp_{_uid()}.html"
+            await tf.download_to_drive(sp_html)
+            with open(sp_html, "r", encoding="utf-8") as fh:
+                html_content = fh.read()
+            if sp_html.exists(): sp_html.unlink()
+            if not html_content.strip() or ("<html" not in html_content.lower() and "<body" not in html_content.lower()):
+                await msg.reply_text("❌ فایل ارسال‌شده یک فایل HTML معتبر به نظر نمی‌رسد.", reply_markup=main_kb(u.id))
+                return
+            settings_update(webapp_html=html_content)
+            await msg.reply_text(
+                "✅ فایل HTML آفلاین مینی‌اپ با موفقیت ذخیره شد!\n"
+                "اکنون مشتریان با زدن دکمهٔ مینی‌اپ یا دانلود فایل در بخش پشتیبانی، این صفحه را به صورت آفلاین مشاهده خواهند کرد.",
+                reply_markup=main_kb(u.id)
+            )
+        except Exception as e:
+            await msg.reply_text(f"⚠️ خطا در پردازش فایل HTML: {e}", reply_markup=main_kb(u.id))
+        return
+
     # ── بازگردانی بک‌اپ دیتابیس (ادمین) ──
     if is_admin(u.id) and admin_sessions.get(u.id, {}).get("state") == "adm_restore_db":
         admin_sessions.pop(u.id, None)
@@ -858,15 +1181,23 @@ async def support_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     s = settings_get()
     txt = s.get("support_text") or "برای ارتباط با پشتیبانی از روش‌های زیر استفاده کنید:"
     mode = s.get("support_mode", "bot")
+    rows = []
+    if mode != "admin_id":
+        rows.append([btn("💬 گفتگو با پشتیبانی", "sup_chat_start")])
+    try:
+        from telegram import WebAppInfo
+        rows.append([InlineKeyboardButton("🌐 مینی‌اپ آفلاین / ارتباط با ما", web_app=WebAppInfo(url=get_webapp_url()))])
+    except Exception:
+        pass
+    rows.append([btn("📥 دانلود فایل آفلاین HTML", "sup_download_html")])
     if mode == "admin_id":
         info = ""
         if s.get("support_phone"): info += f"\n📱 تلفن: {s['support_phone']}"
         if s.get("support_telegram"): info += f"\n💬 تلگرام: @{s['support_telegram']}"
         if not info: info = "\nاطلاعات پشتیبانی (آیدی/تلفن) در تنظیمات ثبت نشده است."
-        await update.message.reply_text(f"📞 پشتیبانی:\n{txt}{info}", reply_markup=main_kb(u.id))
+        await update.message.reply_text(f"📞 پشتیبانی:\n{txt}{info}", reply_markup=InlineKeyboardMarkup(rows))
     else:
-        kb = InlineKeyboardMarkup([[btn("💬 گفتگو با پشتیبانی", "sup_chat_start")]])
-        await update.message.reply_text(f"📞 پشتیبانی:\n{txt}", reply_markup=kb)
+        await update.message.reply_text(f"📞 پشتیبانی:\n{txt}", reply_markup=InlineKeyboardMarkup(rows))
 
 async def wal_enter_amt_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
@@ -1052,6 +1383,7 @@ def admin_stats_text():
 
 def admin_stats_kb():
     return InlineKeyboardMarkup([
+        [btn("📊 دانلود گزارش کامل اکسل (Excel)", "adm_export_excel")],
         [btn("👥 لیست کاربران (سفارش‌ها و کیف پول)", "adm_stats_users")],
         [btn("📦 کل سفارش‌ها", "adm_orders")],
         [btn("💰 لاگ درآمدها و واریزی‌ها", "adm_stats_income")],
@@ -1280,6 +1612,7 @@ def admin_settings_view():
         [btn("🔑 تنظیم کد جایزه", "se_rewardcode"), btn("💰 مبلغ کد جایزه", "se_rewardamt")],
         [btn("تلفن", "se_phone"), btn("تلگرام", "se_tg")],
         [btn("🔄 روش پشتیبانی", "sa_supmode"), btn("📝 متن پشتیبانی", "se_suptext")],
+        [btn("📤 آپلود فایل HTML مینی‌اپ", "adm_upload_webapp_html")],
         [btn("↩️ منوی مدیریت", "adm_menu")],
     ]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -1330,7 +1663,8 @@ def admin_user_wallet_view(uid):
     if not w.get("transactions"):
         lines.append("تراکنشی ثبت نشده است.")
     rows = [
-        [btn("➕ افزایش موجودی", f"adm_wal_add_{uid}")],
+        [btn("➕ افزایش موجودی", f"adm_wal_add_{uid}"), btn("➖ کسر از موجودی", f"adm_wal_sub_{uid}")],
+        [btn("✏️ تنظیم موجودی دقیق", f"adm_wal_set_{uid}")],
         [btn("↩️ بازگشت به کیف پول‌ها", "adm_wallet"), btn("↩️ منوی مدیریت", "adm_menu")]
     ]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -1531,6 +1865,34 @@ async def admin_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(txt, reply_markup=kb)
         return True
 
+    if state == "adm_wal_sub_amt":
+        v = to_int(t)
+        if v is None or v <= 0:
+            await update.message.reply_text("⚠️ لطفاً یک مبلغ معتبر (عدد به تومان) ارسال کنید.")
+            return True
+        target_uid = st["target_uid"]
+        w_sub = wallet_credit(target_uid, -v, "کسر از موجودی توسط مدیریت")
+        admin_sessions.pop(u.id, None)
+        _notify_user(target_uid, f"ℹ️ مبلغ {v:,} تومان از موجودی کیف پول شما توسط مدیریت کسر شد.\n💰 موجودی جدید: {w_sub['balance']:,} تومان")
+        await update.message.reply_text(f"✅ مبلغ {v:,} تومان از موجودی کاربر کسر شد.")
+        txt, kb = admin_user_wallet_view(target_uid)
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+
+    if state == "adm_wal_set_amt":
+        v = to_int(t)
+        if v is None or v < 0:
+            await update.message.reply_text("⚠️ لطفاً یک عدد معتبر (مثبت یا صفر) برای موجودی جدید ارسال کنید.")
+            return True
+        target_uid = st["target_uid"]
+        w_set = wallet_set_balance(target_uid, v, "تنظیم و اصلاح موجودی توسط مدیریت")
+        admin_sessions.pop(u.id, None)
+        _notify_user(target_uid, f"ℹ️ موجودی کیف پول شما توسط مدیریت اصلاح و به مبلغ {v:,} تومان تنظیم شد.")
+        await update.message.reply_text(f"✅ موجودی کیف پول کاربر به {v:,} تومان تنظیم شد.")
+        txt, kb = admin_user_wallet_view(target_uid)
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+
     if state == "adm_add_id":
         new_id = to_int(t)
         if new_id is None:
@@ -1618,6 +1980,31 @@ async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if d == "adm_stats":
         await q.answer()
         await safe_edit(q, text=admin_stats_text(), reply_markup=admin_stats_kb()); return
+    if d == "adm_export_excel":
+        await q.answer("📊 در حال ساخت فایل اکسل...")
+        sp_excel = UPLOAD_FOLDER / f"report_uni_{_now()[:10]}.xlsx"
+        try:
+            generate_excel_report(str(sp_excel))
+            with open(sp_excel, "rb") as fh:
+                await ctx.bot.send_document(
+                    chat_id=u.id,
+                    document=fh,
+                    filename=f"Gozaresh_Amari_{_now()[:10]}.xlsx",
+                    caption="📊 گزارش جامع آمار ربات (اکسل چندصفحه‌ای)\n\nشامل شیت‌های:\n۱. سفارش‌ها\n۲. کاربران و کیف پول\n۳. واریزی‌ها و پرداخت‌ها\n۴. دسته‌بندی‌ها"
+                )
+            if sp_excel.exists(): sp_excel.unlink()
+        except Exception as e:
+            await ctx.bot.send_message(u.id, f"⚠️ خطا در ساخت گزارش اکسل: {e}")
+        return
+    if d == "adm_upload_webapp_html":
+        await q.answer()
+        admin_sessions[u.id] = {"state": "adm_upload_html"}
+        await safe_edit(q, text=(
+            "📤 آپلود فایل HTML مینی‌اپ (صفحهٔ ارتباط با ما آفلاین)\n\n"
+            "لطفاً فایل `.html` طراحی‌شدهٔ خود را به صورت Document در همین چت ارسال کنید (یا /cancel):\n\n"
+            "نکته: برای نمایش تلفن یا آیدی تلگرام تنظیم‌شده در ربات، می‌توانید از عبارات `{{PHONE}}` و `{{TELEGRAM}}` در فایل HTML خود استفاده کنید."
+        ))
+        return
     if d == "adm_stats_users":
         await q.answer(); txt, kb = admin_stats_users_view(); await safe_edit(q, text=txt, reply_markup=kb); return
     if d.startswith("adm_user_detail_"):
@@ -1700,6 +2087,18 @@ async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         uid = d.replace("adm_wal_add_", "")
         admin_sessions[u.id] = {"state": "adm_wal_add_amt", "target_uid": int(uid)}
         await q.edit_message_text("💰 لطفاً مبلغ افزایش موجودی (به تومان) را ارسال کنید (یا /cancel):"); return
+    if d.startswith("adm_wal_sub_"):
+        await q.answer()
+        uid = d.replace("adm_wal_sub_", "")
+        admin_sessions[u.id] = {"state": "adm_wal_sub_amt", "target_uid": int(uid)}
+        await safe_edit(q, text="➖ لطفاً مبلغی که می‌خواهید از موجودی کاربر کسر شود را به تومان ارسال کنید (یا /cancel):")
+        return
+    if d.startswith("adm_wal_set_"):
+        await q.answer()
+        uid = d.replace("adm_wal_set_", "")
+        admin_sessions[u.id] = {"state": "adm_wal_set_amt", "target_uid": int(uid)}
+        await safe_edit(q, text="✏️ لطفاً موجودی جدید و دقیق کیف پول کاربر را به تومان ارسال کنید (مثلاً 100000 / یا 0 برای صفر کردن / یا /cancel):")
+        return
     if d == "adm_admins":
         await q.answer(); txt, kb = admin_admins_view(); await q.edit_message_text(txt, reply_markup=kb); return
     if d == "adm_addadm":
@@ -1888,6 +2287,22 @@ async def callback_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q: return
     d = q.data
+    if d == "sup_download_html":
+        await q.answer("📥 در حال ارسال فایل HTML آفلاین...")
+        u = q.from_user
+        s = settings_get()
+        html_data = s.get("webapp_html") or DEFAULT_WEBAPP_HTML
+        html_data = html_data.replace("{{PHONE}}", s.get("support_phone", "") or "—")
+        html_data = html_data.replace("{{TELEGRAM}}", s.get("support_telegram", "") or "—")
+        import io
+        bio = io.BytesIO(html_data.encode("utf-8"))
+        bio.name = "contact_us_offline.html"
+        await ctx.bot.send_document(
+            chat_id=u.id,
+            document=bio,
+            caption="📄 فایل HTML آفلاین مینی‌اپ / ارتباط با ما\n\nمی‌توانید این فایل را روی تلفن یا کامپیوتر خود حتی بدون اینترنت باز کنید و اطلاعات و سوالات متداول را مشاهده نمایید!"
+        )
+        return
     if d == "wal_rewardcode":
         await q.answer()
         u = q.from_user
@@ -2039,6 +2454,19 @@ def seed():
         log.info("demo categories seeded.")
 
 # ═══════════════ MAIN ═══════════════
+@flask_app.route("/webapp")
+@flask_app.route("/miniapp")
+@flask_app.route("/contact")
+def serve_webapp():
+    s = settings_get()
+    html_data = s.get("webapp_html") or DEFAULT_WEBAPP_HTML
+    html_data = html_data.replace("{{PHONE}}", s.get("support_phone", "") or "—")
+    html_data = html_data.replace("{{TELEGRAM}}", s.get("support_telegram", "") or "—")
+    return html_data, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=86400"
+    }
+
 def run_flask():
     flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
