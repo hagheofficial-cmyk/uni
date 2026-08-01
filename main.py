@@ -1,47 +1,47 @@
 #!/usr/bin/env python3
-"""🎓 ربات سفارش پروژه دانشگاهی v3 — PTB 21.3 + Flask"""
+"""🎓 ربات سفارش پروژه دانشگاهی — نسخهٔ تمام‌رباتی (بدون مینی‌اپ/وب‌اپ)
 
-import os, json, hmac, hashlib, logging, threading, uuid, sys, time, asyncio
+همه چیز داخل تلگرام انجام می‌شود:
+- مشتری: ثبت سفارش، آپلود فایل، پرداخت دستی (شماره کارت + رسید)، باشگاه مشتریان، کیف پول
+- ادمین: آمار، سفارش‌ها، پرداخت‌ها، دسته‌بندی‌ها، تنظیمات، پیام همگانی، کاربران، اعلان‌ها
+"""
+
+import os, json, logging, threading, uuid, time, asyncio
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs
 
 import requests
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask
 from dotenv import load_dotenv
 from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
-                      MenuButtonWebApp, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton)
+                      ReplyKeyboardMarkup, KeyboardButton)
 from telegram.ext import (Application, CommandHandler, MessageHandler,
                           CallbackQueryHandler, filters, ContextTypes)
 from telegram.constants import ParseMode
 
 load_dotenv()
 BASE_DIR = Path(__file__).parent
-UPLOAD_FOLDER = BASE_DIR / "uploads"; UPLOAD_FOLDER.mkdir(exist_ok=True)
-DB_FILE = BASE_DIR / "database.json"
+UPLOAD_FOLDER = Path(os.getenv("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))); UPLOAD_FOLDER.mkdir(exist_ok=True)
+DB_FILE = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "database.json")))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",") if x.strip()]
-PORT = int(os.getenv("PORT", "5000"))
-ZP_MERCHANT = os.getenv("ZARINPAL_MERCHANT_ID", "")
-ZP_SANDBOX = os.getenv("ZARINPAL_SANDBOX", "true").lower() == "true"
-ZP_API = "https://sandbox.zarinpal.com/pg/v4/payment/" if ZP_SANDBOX else "https://api.zarinpal.com/pg/v4/payment/"
-ZP_START = "https://sandbox.zarinpal.com/pg/StartPay/" if ZP_SANDBOX else "https://www.zarinpal.com/pg/StartPay/"
+PORT = int(os.getenv("PORT") or os.getenv("WEBAPP_PORT") or "5000")
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # ═══════════════ DATABASE ═══════════════
-def _db():
-    if DB_FILE.exists():
-        with open(DB_FILE, "r", encoding="utf-8") as f: return json.load(f)
+def _default_db():
     return {
-        "categories": [], "orders": [], "files": [], "payments": [], "wallets": [], "referrals": [],
+        "categories": [], "orders": [], "files": [], "payments": [],
+        "wallets": [], "referrals": [], "users": [], "broadcasts": [],
         "settings": {
             "advance_percent": 50, "min_advance": 100000, "currency": "تومان",
+            "advance_enabled": True, "customer_orders_display_limit": 8,
             "support_phone": "", "support_telegram": "",
             "referral_discount_percent": 10, "referral_reward": 50000,
-            "payment_methods": [{"name": "زرین‌پال", "url": "zarinpal", "active": True}]
+            "bank_card_number": "", "bank_card_holder": "", "bank_name": "", "bank_note": "",
         },
         "notifications": {
             "pending": {"to_user": "✅ سفارش شما با موفقیت ثبت شد.", "to_admin": "📬 سفارش جدید ثبت شد!"},
@@ -53,13 +53,28 @@ def _db():
         }
     }
 
-def _save(d): 
+def _db():
+    if DB_FILE.exists():
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f: d = json.load(f)
+            base = _default_db()
+            for k, v in base.items():
+                if k not in d: d[k] = v
+            if isinstance(d.get("settings"), dict):
+                for k, v in base["settings"].items():
+                    d["settings"].setdefault(k, v)
+            return d
+        except Exception:
+            pass
+    return _default_db()
+
+def _save(d):
     with open(DB_FILE, "w", encoding="utf-8") as f: json.dump(d, f, ensure_ascii=False, indent=2)
 
 _uid = lambda: str(uuid.uuid4())[:10]
 _now = lambda: datetime.now().isoformat()
 
-# ═══════════════ CRUD ═══════════════
+# ═══════════════ CRUD: دسته‌بندی ═══════════════
 def cat_add(n, d, p, a=None):
     db = _db(); s = db["settings"]
     c = {"id": _uid(), "name": n, "description": d, "price": int(p),
@@ -83,14 +98,58 @@ def cat_update(cid, **kw):
 
 cat_delete = lambda cid: cat_update(cid, active=False)
 
+# ═══════════════ CRUD: کاربران ═══════════════
+def user_register(uid_, uname="", fname=""):
+    db = _db()
+    for u in db["users"]:
+        if u["id"] == uid_:
+            u["username"] = uname or u.get("username", "")
+            u["first_name"] = fname or u.get("first_name", "")
+            u["last_seen"] = _now()
+            _save(db); return u
+    nu = {"id": uid_, "username": uname or "", "first_name": fname or "",
+          "joined_at": _now(), "last_seen": _now(),
+          "referred_by": None, "referral_used": False}
+    db["users"].append(nu); _save(db); return nu
+
+def user_get(uid_):
+    for u in _db()["users"]:
+        if u["id"] == uid_: return u
+    return None
+
+def user_update(uid_, **kw):
+    db = _db()
+    for u in db["users"]:
+        if u["id"] == uid_: u.update(kw); _save(db); return u
+    return None
+
+def user_all():
+    return _db()["users"]
+
+# ═══════════════ CRUD: سفارش ═══════════════
 def order_create(uid_, uname, fname, cid, desc):
     cat = cat_get(cid)
     if not cat: return None
-    adv = int(cat["price"] * cat["advance_percent"] / 100)
+    s = settings_get()
+    advance_on = bool(s.get("advance_enabled", True))
+    adv = int(cat["price"] * cat["advance_percent"] / 100) if advance_on else 0
+    final = cat["price"] - adv
+
+    discount = 0; ref_code = None
+    u = user_get(uid_)
+    if u and u.get("referred_by") and not u.get("referral_used"):
+        discount = int(cat["price"] * s.get("referral_discount_percent", 10) / 100)
+        ref_code = u["referred_by"]
+        user_update(uid_, referral_used=True)
+    if discount:
+        if adv > 0: adv = max(0, adv - discount)
+        else: final = max(0, final - discount)
+
     db = _db()
     o = {"id": _uid(), "user_id": uid_, "username": uname or "", "first_name": fname or "",
          "category_id": cid, "category_name": cat["name"], "description": desc,
-         "price": cat["price"], "advance_amount": adv, "final_amount": cat["price"] - adv,
+         "price": cat["price"], "advance_amount": adv, "final_amount": final,
+         "discount": discount, "referral_code": ref_code, "referral_discount_applied": bool(discount),
          "status": "pending", "created_at": _now(), "updated_at": _now()}
     db["orders"].append(o); _save(db); return o
 
@@ -111,6 +170,7 @@ def order_update(oid, **kw):
         if o["id"] == oid: o.update(kw); o["updated_at"] = _now(); _save(db); return o
     return None
 
+# ═══════════════ CRUD: فایل ═══════════════
 def file_add(oid, fn, fp, tgid):
     db = _db()
     f = {"id": _uid(), "order_id": oid, "filename": fn, "file_path": fp, "telegram_file_id": tgid, "uploaded_at": _now()}
@@ -118,10 +178,13 @@ def file_add(oid, fn, fp, tgid):
 
 file_get = lambda oid: [f for f in _db()["files"] if f["order_id"] == oid]
 
+# ═══════════════ CRUD: پرداخت ═══════════════
 def pay_create(oid, amt, pt):
     db = _db()
     p = {"id": _uid(), "order_id": oid, "amount": amt, "payment_type": pt,
-         "authority": "", "ref_id": "", "status": "pending", "created_at": _now(), "admin_approved": None}
+         "authority": "", "ref_id": "", "status": "pending", "created_at": _now(),
+         "admin_approved": None, "receipt_file_id": None, "receipt_path": None,
+         "receipt_sent_at": None, "approved_at": None, "approved_by": None}
     db["payments"].append(p); _save(db); return p
 
 def pay_get(pid):
@@ -137,6 +200,22 @@ def pay_update(pid, **kw):
 
 pay_by_order = lambda oid: [p for p in _db()["payments"] if p["order_id"] == oid]
 
+def payment_stage(o):
+    if o["status"] == "completed": return "final"
+    if o["status"] == "pending" and settings_get().get("advance_enabled", True): return "advance"
+    return "final"
+
+def payment_amount(o, stage):
+    return o["advance_amount"] if stage == "advance" else o["final_amount"]
+
+def get_or_create_payment(o):
+    stage = payment_stage(o)
+    for p in pay_by_order(o["id"]):
+        if p["status"] == "pending" and p["payment_type"] == stage:
+            return p
+    return pay_create(o["id"], payment_amount(o, stage), stage)
+
+# ═══════════════ CRUD: کیف پول ═══════════════
 def wallet_get(uid_):
     for w in _db()["wallets"]:
         if w["user_id"] == uid_: return w
@@ -160,10 +239,12 @@ def wallet_credit(uid_, amt, desc=""):
             _save(db); return w
     return None
 
+# ═══════════════ CRUD: معرف ═══════════════
 def ref_create(uid_, code=None):
     db = _db()
     code = code or f"REF{uid_}{_uid()[:4]}"
-    r = {"id": _uid(), "user_id": uid_, "code": code.upper(), "invited_count": 0, "total_earned": 0, "created_at": _now()}
+    r = {"id": _uid(), "user_id": uid_, "code": code.upper(), "invited_count": 0,
+         "total_earned": 0, "invited_user_ids": [], "created_at": _now()}
     db["referrals"].append(r); _save(db); return r
 
 def ref_get_by_user(uid_):
@@ -178,15 +259,27 @@ def ref_get_by_code(code):
 
 def ref_record_invite(ref_uid, inv_uid):
     db = _db()
+    reward = db["settings"].get("referral_reward", 50000)
     for r in db["referrals"]:
         if r["user_id"] == ref_uid:
-            r["invited_count"] += 1
-            reward = db["settings"].get("referral_reward", 50000)
-            r["total_earned"] += reward
-            wallet_credit(ref_uid, reward, f"پاداش دعوت کاربر {inv_uid}")
+            invited = r.setdefault("invited_user_ids", [])
+            if inv_uid in invited: return None
+            invited.append(inv_uid)
+            r["invited_count"] = len(invited)
+            r["total_earned"] = r.get("total_earned", 0) + reward
+            w = None
+            for ww in db["wallets"]:
+                if ww["user_id"] == ref_uid: w = ww; break
+            if w is None:
+                w = {"id": _uid(), "user_id": ref_uid, "balance": 0, "transactions": [], "created_at": _now()}
+                db["wallets"].append(w)
+            w["balance"] += reward
+            w["transactions"].append({"type": "credit", "amount": reward,
+                                      "description": f"پاداش دعوت کاربر {inv_uid}", "date": _now()})
             _save(db); return r
     return None
 
+# ═══════════════ تنظیمات و اعلان‌ها ═══════════════
 settings_get = lambda: _db()["settings"]
 def settings_update(**kw):
     db = _db(); db["settings"].update(kw); _save(db); return db["settings"]
@@ -194,6 +287,15 @@ def settings_update(**kw):
 notif_get = lambda: _db()["notifications"]
 def notif_update(data):
     db = _db(); db["notifications"] = data; _save(db); return db["notifications"]
+
+def bank_info_text():
+    s = settings_get()
+    lines = []
+    if s.get("bank_card_number"): lines.append(f"💳 شماره کارت: {s['bank_card_number']}")
+    if s.get("bank_card_holder"): lines.append(f"👤 به نام: {s['bank_card_holder']}")
+    if s.get("bank_name"): lines.append(f"🏦 بانک: {s['bank_name']}")
+    if s.get("bank_note"): lines.append(f"📝 {s['bank_note']}")
+    return "\n".join(lines) or "💳 شماره کارت هنوز در تنظیمات ثبت نشده است."
 
 def dashboard():
     db = _db(); oo = db["orders"]; pp = db["payments"]
@@ -206,377 +308,185 @@ def dashboard():
         "total_earned": sum(p["amount"] for p in pp if p["status"] == "paid"),
         "pending_payments": sum(p["amount"] for p in pp if p["status"] == "pending"),
         "categories": len(db["categories"]),
-        "total_users": len(set(o["user_id"] for o in oo)),
-        "pending_approval_payments": len([p for p in pp if p["status"] == "pending" and p.get("admin_approved") is None]),
-    }
-
-def customer_dashboard(uid_):
-    oo = order_all(uid_=uid_)
-    w = wallet_ensure(uid_); ref = ref_get_by_user(uid_)
-    return {
-        "orders_count": len(oo),
-        "active_orders": len([o for o in oo if o["status"] in ("paid_advance", "in_progress")]),
-        "completed_orders": len([o for o in oo if o["status"] in ("completed", "paid_final")]),
-        "wallet_balance": w["balance"],
-        "referral_code": ref["code"] if ref else None,
-        "referral_count": ref["invited_count"] if ref else 0,
-        "referral_earned": ref["total_earned"] if ref else 0,
+        "total_users": len(db["users"]) or len(set(o["user_id"] for o in oo)),
+        "pending_receipts": len([p for p in pp if p["status"] == "pending" and p.get("receipt_file_id")]),
     }
 
 def esc(s):
     if not s: return ""
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-# ═══════════════ PUBLIC URL ═══════════════
-def detect_url():
-    for k in ["WEBAPP_URL", "RENDER_EXTERNAL_URL"]:
-        v = os.getenv(k, "")
-        if v: return v
-    v = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
-    return f"https://{v}" if v else ""
+def bot_username():
+    return os.environ.get("BOT_USERNAME", "")
 
-# ═══════════════ PAYMENT ═══════════════
-def zp_request(amount, desc, cb_url):
-    try:
-        r = requests.post(ZP_API + "request.json", json={
-            "merchant_id": ZP_MERCHANT, "amount": amount, "description": desc, "callback_url": cb_url
-        }, headers={"Content-Type": "application/json"}, timeout=15)
-        d = r.json()
-        if d.get("data") and d["data"].get("authority"):
-            return True, d["data"]["authority"], f"{ZP_START}{d['data']['authority']}"
-        return False, str(d.get("errors", "خطا")), None
-    except Exception as e:
-        return False, str(e), None
+def referral_link(code):
+    u = bot_username()
+    return f"https://t.me/{u}?start=ref_{code}" if u else ""
 
-def zp_verify(auth, amount):
-    try:
-        r = requests.post(ZP_API + "verify.json", json={
-            "merchant_id": ZP_MERCHANT, "amount": amount, "authority": auth
-        }, headers={"Content-Type": "application/json"}, timeout=15)
-        d = r.json()
-        if d.get("data") and d["data"].get("ref_id"):
-            return True, d["data"]["ref_id"]
-        return False, str(d.get("errors", ""))
-    except Exception as e:
-        return False, str(e)
+def to_int(t):
+    try: return int(str(t).replace(",", "").strip())
+    except: return None
 
-# ═══════════════ FLASK ═══════════════
+# ═══════════════ لیبل‌ها ═══════════════
+STATUS_LABELS = {"pending": "⏳ در انتظار", "paid_advance": "💰 پیش‌پرداخت", "in_progress": "🔄 در حال انجام",
+                 "completed": "✅ تکمیل", "paid_final": "💵 تسویه", "cancelled": "❌ لغو"}
+STATUS_FLOW = {"pending": ["paid_advance", "cancelled"], "paid_advance": ["in_progress", "cancelled"],
+               "in_progress": ["completed", "cancelled"], "completed": ["paid_final", "cancelled"],
+               "cancelled": ["pending"]}
+FLOW_BTN = {"paid_advance": "تأیید پیش‌پرداخت", "in_progress": "شروع انجام", "completed": "تکمیل پروژه",
+            "paid_final": "تسویه نهایی", "cancelled": "لغو سفارش", "pending": "بازگشت به انتظار"}
+PAY_LABEL = {"pending": "در انتظار تأیید", "paid": "پرداخت شده", "failed": "ناموفق"}
+
+# ═══════════════ FLASK (فقط برای زنده ماندن سرویس Render) ═══════════════
 flask_app = Flask(__name__)
-PUBLIC_URL = ""
 
-def _auth(admin_only=False):
-    init = request.headers.get("X-Telegram-Init-Data") or request.args.get("initData", "")
-    if init:
-        try:
-            p = parse_qs(init); d = {k: v[0] for k, v in p.items()}; h = d.pop("hash", "")
-            check = "\n".join(f"{k}={v}" for k, v in sorted(d.items()))
-            sk = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-            if hmac.new(sk, check.encode(), hashlib.sha256).hexdigest() == h:
-                u = json.loads(d.get("user", "{}"))
-                if admin_only and u.get("id") not in ADMIN_IDS: return None
-                return u
-        except: pass
-    ak = request.args.get("admin_key", "")
-    if ak and ak == BOT_TOKEN[:16]:
-        return {"id": ADMIN_IDS[0] if ADMIN_IDS else 0, "is_admin": True}
-    return None
-
-# ── pages ──
 @flask_app.route("/")
 def health(): return "OK"
 
 @flask_app.route("/admin")
-def admin_page(): return render_template("admin.html")
+def old_admin():
+    return "<div dir='rtl' style='font-family:Tahoma;text-align:center;padding:40px;color:#333'>⛔️ پنل مدیریت حذف شد — همه‌چیز داخل خود ربات تلگرام است.<br>ربات را باز کنید و دکمه «⚙️ پنل مدیریت» را بزنید.</div>"
 
 @flask_app.route("/panel")
-def cust_page(): return render_template("customer.html")
-
-# ── admin API ──
-def _admin_only(f):
-    def w(*a, **kw):
-        if not _auth(admin_only=True): return jsonify({"error": "unauthorized"}), 403
-        return f(*a, **kw)
-    w.__name__ = f.__name__; return w
-
-@flask_app.route("/api/admin/dashboard")
-@_admin_only
-def api_dashboard(): return jsonify(dashboard())
-
-@flask_app.route("/api/admin/categories")
-@_admin_only
-def api_cats(): return jsonify(_db()["categories"])
-
-@flask_app.route("/api/admin/categories", methods=["POST"])
-@_admin_only
-def api_cat_create():
-    d = request.json or {}
-    if not d.get("name") or not d.get("price"): return jsonify({"error": "name & price required"}), 400
-    return jsonify(cat_add(d["name"].strip(), d.get("description", "").strip(), int(d["price"]), d.get("advance_percent")))
-
-@flask_app.route("/api/admin/categories/<cid>", methods=["PUT"])
-@_admin_only
-def api_cat_update(cid):
-    d = request.json or {}
-    c = cat_update(cid, **{k: v for k, v in d.items() if k in ["name", "description", "price", "advance_percent", "active"]})
-    return jsonify(c) if c else (jsonify({"error": "not found"}), 404)
-
-@flask_app.route("/api/admin/categories/<cid>", methods=["DELETE"])
-@_admin_only
-def api_cat_delete(cid): cat_delete(cid); return jsonify({"ok": True})
-
-@flask_app.route("/api/admin/orders")
-@_admin_only
-def api_orders():
-    oo = order_all(status=request.args.get("status"))
-    for o in oo: o["files"] = file_get(o["id"]); o["payments"] = pay_by_order(o["id"])
-    return jsonify(oo)
-
-@flask_app.route("/api/admin/orders/<oid>")
-@_admin_only
-def api_order_detail(oid):
-    o = order_get(oid)
-    if not o: return jsonify({"error": "not found"}), 404
-    o["files"] = file_get(oid); o["payments"] = pay_by_order(oid)
-    return jsonify(o)
-
-@flask_app.route("/api/admin/orders/<oid>/status", methods=["PUT"])
-@_admin_only
-def api_order_status(oid):
-    ns = (request.json or {}).get("status")
-    if ns not in ["pending", "paid_advance", "in_progress", "completed", "paid_final", "cancelled"]:
-        return jsonify({"error": "invalid status"}), 400
-    o = order_update(oid, status=ns)
-    if not o: return jsonify({"error": "not found"}), 404
-    _notify_user(o["user_id"], notif_get().get(ns, {}).get("to_user", ""))
-    return jsonify(o)
-
-@flask_app.route("/api/admin/payments")
-@_admin_only
-def api_payments(): return jsonify(_db()["payments"])
-
-@flask_app.route("/api/admin/payments/<pid>/approve", methods=["PUT"])
-@_admin_only
-def api_pay_approve(pid):
-    p = pay_update(pid, admin_approved=True, status="paid")
-    if not p: return jsonify({"error": "not found"}), 404
-    o = order_get(p["order_id"])
-    if o: order_update(o["id"], status="paid_advance" if p["payment_type"] == "advance" else "paid_final")
-    return jsonify(p)
-
-@flask_app.route("/api/admin/payments/<pid>/reject", methods=["PUT"])
-@_admin_only
-def api_pay_reject(pid):
-    p = pay_update(pid, admin_approved=False, status="failed")
-    return jsonify(p) if p else (jsonify({"error": "not found"}), 404)
-
-@flask_app.route("/api/admin/settings")
-@_admin_only
-def api_settings(): return jsonify(settings_get())
-
-@flask_app.route("/api/admin/settings", methods=["PUT"])
-@_admin_only
-def api_settings_upd():
-    d = request.json or {}
-    ok = ["advance_percent", "min_advance", "currency", "support_phone", "support_telegram", "referral_discount_percent", "referral_reward", "payment_methods"]
-    return jsonify(settings_update(**{k: v for k, v in d.items() if k in ok}))
-
-@flask_app.route("/api/admin/notifications")
-@_admin_only
-def api_notifs(): return jsonify(notif_get())
-
-@flask_app.route("/api/admin/notifications", methods=["PUT"])
-@_admin_only
-def api_notifs_upd(): return jsonify(notif_update(request.json or {}))
-
-@flask_app.route("/api/admin/files/<fid>")
-@_admin_only
-def api_file_dl(fid):
-    for f in _db()["files"]:
-        if f["id"] == fid:
-            p = Path(f["file_path"])
-            if p.exists(): return send_from_directory(str(p.parent), p.name, download_name=f["filename"])
-    return jsonify({"error": "not found"}), 404
-
-# ── customer API ──
-def _user_only(f):
-    def w(*a, **kw):
-        u = _auth(admin_only=False)
-        if not u: return jsonify({"error": "unauthorized"}), 403
-        return f(u, *a, **kw)
-    w.__name__ = f.__name__; return w
-
-@flask_app.route("/api/customer/dashboard")
-@_user_only
-def api_cust_dash(u): return jsonify(customer_dashboard(u["id"]))
-
-@flask_app.route("/api/customer/categories")
-@_user_only
-def api_cust_cats(u): return jsonify(cat_all(True))
-
-@flask_app.route("/api/customer/orders")
-@_user_only
-def api_cust_orders(u):
-    oo = order_all(uid_=u["id"])
-    for o in oo: o["files"] = file_get(o["id"]); o["payments"] = pay_by_order(o["id"])
-    return jsonify(oo)
-
-@flask_app.route("/api/customer/orders", methods=["POST"])
-@_user_only
-def api_cust_order_create(u):
-    d = request.json or {}
-    cid, desc = d.get("category_id"), d.get("description", "")
-    if not cid: return jsonify({"error": "category_id required"}), 400
-    o = order_create(u["id"], u.get("username", ""), u.get("first_name", ""), cid, desc)
-    if not o: return jsonify({"error": "category not found"}), 404
-    for aid in ADMIN_IDS:
-        _notify_user(aid, f"📬 سفارش جدید #{o['id']}\nاز: {esc(u.get('first_name','کاربر'))}\nمبلغ: {o['price']:,} تومان")
-    return jsonify(o)
-
-@flask_app.route("/api/customer/orders/<oid>")
-@_user_only
-def api_cust_order_detail(u, oid):
-    o = order_get(oid)
-    if not o or o["user_id"] != u["id"]: return jsonify({"error": "not found"}), 404
-    o["files"] = file_get(oid); o["payments"] = pay_by_order(oid)
-    return jsonify(o)
-
-@flask_app.route("/api/customer/orders/<oid>/ref_code", methods=["POST"])
-@_user_only
-def api_cust_order_ref(u, oid):
-    o = order_get(oid)
-    if not o or o["user_id"] != u["id"]: return jsonify({"error": "not found"}), 404
-    code = (request.json or {}).get("code", "").strip().upper()
-    ref = ref_get_by_code(code)
-    if not ref or ref["user_id"] == u["id"]: return jsonify({"error": "کد معرف نامعتبر"}), 400
-    pct = settings_get().get("referral_discount_percent", 10)
-    discount = int(o["price"] * pct / 100)
-    order_update(oid, discount=discount, referral_code=code, referral_discount_applied=True)
-    return jsonify({"discount": discount})
-
-@flask_app.route("/api/customer/wallet")
-@_user_only
-def api_cust_wallet(u):
-    w = wallet_ensure(u["id"]); ref = ref_get_by_user(u["id"])
-    return jsonify({"wallet": w, "referral": ref})
-
-@flask_app.route("/api/customer/payments", methods=["POST"])
-@_user_only
-def api_cust_pay_create(u):
-    d = request.json or {}
-    oid, pt = d.get("order_id"), d.get("type", "advance")
-    o = order_get(oid)
-    if not o or o["user_id"] != u["id"]: return jsonify({"error": "not found"}), 404
-    amt = o["advance_amount"] if pt == "advance" else o["final_amount"]
-    if o.get("discount"): amt = max(0, amt - o["discount"])
-    p = pay_create(oid, amt, pt)
-    ok, auth, purl = zp_request(amt, f"{'پیش‌پرداخت' if pt == 'advance' else 'پرداخت نهایی'} #{oid}", f"{PUBLIC_URL}/payment/callback/{p['id']}")
-    if ok and purl:
-        pay_update(p["id"], authority=auth)
-        return jsonify({"payment_url": purl, "payment_id": p["id"], "amount": amt})
-    return jsonify({"error": auth}), 500
-
-@flask_app.route("/api/customer/referral/apply", methods=["POST"])
-@_user_only
-def api_cust_ref_apply(u):
-    code = (request.json or {}).get("code", "").strip().upper()
-    ref = ref_get_by_code(code)
-    if not ref: return jsonify({"error": "کد معرف نامعتبر"}), 400
-    if ref["user_id"] == u["id"]: return jsonify({"error": "کد خودتان!"}), 400
-    for o in order_all(uid_=u["id"]):
-        if o.get("referral_code"): return jsonify({"error": "قبلاً استفاده کرده‌اید"}), 400
-    ref_record_invite(ref["user_id"], u["id"])
-    return jsonify({"discount_percent": settings_get().get("referral_discount_percent", 10), "message": "کد معرف تأیید شد!"})
-
-# ── payment callback ──
-@flask_app.route("/payment/callback/<pid>")
-def pay_callback(pid):
-    auth = request.args.get("Authority", ""); st = request.args.get("Status", "")
-    p = pay_get(pid)
-    if not p: return _pay_html(False, error="تراکنش یافت نشد")
-    o = order_get(p["order_id"])
-    if st != "OK":
-        pay_update(pid, status="failed")
-        return _pay_html(False, p, o, error="پرداخت لغو شد")
-    ok, ref = zp_verify(auth, p["amount"])
-    if ok:
-        pay_update(pid, ref_id=str(ref), status="paid")
-        for aid in ADMIN_IDS:
-            _notify_user(aid, f"💳 پرداخت جدید!\nسفارش #{o['id'] if o else '-'}\nمبلغ: {p['amount']:,} تومان")
-        return _pay_html(True, p, o, ref_id=ref)
-    pay_update(pid, status="failed")
-    return _pay_html(False, p, o, error=str(ref))
-
-def _pay_html(success, p=None, o=None, ref_id=None, error=None):
-    c = "#22c55e" if success else "#ef4444"; icon = "✓" if success else "✕"; title = "پرداخت موفق" if success else "پرداخت ناموفق"
-    detail = f"<p>کد پیگیری: {ref_id}</p>" if success else f"<p>{error}</p>"
-    bot = os.getenv("BOT_USERNAME", ""); amt = f"{p['amount']:,}" if p else "-"; oid = o["id"] if o else "-"; oname = o["category_name"] if o else "-"
-    return f"""<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>*{{margin:0;padding:0}}body{{font-family:-apple-system,Tahoma;background:#0a0a0a;color:#f5f5f5;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}}
-.card{{background:#141414;border-radius:20px;padding:32px 24px;max-width:360px;width:100%;text-align:center;border:1px solid #222}}
-.icon{{width:64px;height:64px;border-radius:50%;background:{c}20;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:28px;color:{c}}}
-h2{{font-size:18px;font-weight:600;margin-bottom:16px;color:{c}}}p{{font-size:13px;color:#888;margin:6px 0}}
-.row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a1a;font-size:13px}}
-.row span:first-child{{color:#666}}.row span:last-child{{color:#ddd;font-weight:500}}
-.btn{{display:inline-block;padding:12px 32px;background:#fff;color:#000;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:600;font-size:14px}}</style></head><body>
-<div class="card"><div class="icon">{icon}</div><h2>{title}</h2>{detail}
-<div class="row"><span>مبلغ</span><span>{amt} تومان</span></div>
-<div class="row"><span>سفارش</span><span>#{oid} - {oname}</span></div>
-<a class="btn" href="https://t.me/{bot}">بازگشت به ربات</a></div></body></html>"""
+def old_panel():
+    return "<div dir='rtl' style='font-family:Tahoma;text-align:center;padding:40px;color:#333'>⚠️ پنل کاربری حذف شد — همه‌چیز داخل خود ربات تلگرام است.</div>"
 
 # ═══════════════ TELEGRAM BOT ═══════════════
-user_sessions = {}
-MAIN_KB = ReplyKeyboardMarkup([
-    [KeyboardButton("📋 ثبت سفارش جدید")],
-    [KeyboardButton("📂 سفارش‌های من"), KeyboardButton("👥 باشگاه مشتریان")],
-    [KeyboardButton("💰 کیف پول"), KeyboardButton("📞 پشتیبانی")],
-], resize_keyboard=True)
+user_sessions = {}   # state machine مشتری
+admin_sessions = {}  # state machine ادمین (منوها)
 
+def btn(text, cb): return InlineKeyboardButton(text, callback_data=cb)
+
+def main_kb(uid):
+    rows = [
+        [KeyboardButton("📋 ثبت سفارش جدید")],
+        [KeyboardButton("📂 سفارش‌های من"), KeyboardButton("👥 باشگاه مشتریان")],
+        [KeyboardButton("💰 کیف پول"), KeyboardButton("📞 پشتیبانی")],
+        [KeyboardButton("🧾 ارسال رسید پرداخت")],
+    ]
+    if uid in ADMIN_IDS:
+        rows.append([KeyboardButton("⚙️ پنل مدیریت")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+def admin_menu_kb():
+    return InlineKeyboardMarkup([
+        [btn("📊 آمار", "adm_stats"), btn("📦 سفارش‌ها", "adm_orders"), btn("💳 پرداخت‌ها", "adm_pays")],
+        [btn("🗂 دسته‌بندی‌ها", "adm_cats"), btn("⚙️ تنظیمات", "adm_set"), btn("📣 پیام همگانی", "adm_bc")],
+        [btn("👥 کاربران", "adm_users"), btn("🔔 اعلان‌ها", "adm_notifs")],
+        [btn("✖️ بستن", "adm_close")],
+    ])
+
+# ── /start ──
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     user_sessions.pop(u.id, None)
+    user_register(u.id, u.username or "", u.first_name or "")
     wallet_ensure(u.id)
     if not ref_get_by_user(u.id): ref_create(u.id)
-    if u.id in ADMIN_IDS and PUBLIC_URL:
-        try:
-            await ctx.bot.set_chat_menu_button(chat_id=u.id,
-                menu_button=MenuButtonWebApp(text="⚙️ پنل مدیریت", web_app=WebAppInfo(url=f"{PUBLIC_URL}/admin")))
-        except: pass
+
+    args = ctx.args or []
+    if args:
+        arg = args[0].lower()
+        if arg.startswith("ref_"):
+            ref = ref_get_by_code(arg[4:])
+            if ref and ref["user_id"] != u.id:
+                r = ref_record_invite(ref["user_id"], u.id)
+                user_update(u.id, referred_by=ref["code"])
+                if r:
+                    reward = settings_get().get("referral_reward", 50000)
+                    _notify_user(ref["user_id"],
+                        f"🎉 دعوت جدید! کاربر {esc(u.first_name or u.id)} با لینک شما عضو شد.\n"
+                        f"💰 پاداش {reward:,} تومان به کیف پول شما اضافه شد.")
+                    await update.message.reply_text(
+                        f"🎉 خوش آمدی! با کد معرف {esc(ref['code'])} عضو شدی و تخفیف اولین سفارشت فعال شد. 🎁")
+            elif ref:
+                await update.message.reply_text("این کد معرف خودتان است!")
+            else:
+                await update.message.reply_text("کد معرف نامعتبر است.")
+        elif arg.startswith("receipt_"):
+            pid = arg.split("_", 1)[1]
+            p = pay_get(pid)
+            o = order_get(p["order_id"]) if p else None
+            if p and o and o["user_id"] == u.id and p["status"] == "pending":
+                user_sessions[u.id] = {"state": "awaiting_receipt", "payment_id": pid}
+                await update.message.reply_text(
+                    f"🧾 سفارش #{o['id']} — مبلغ {p['amount']:,} تومان\n\n"
+                    f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+                    f"📸 حالا عکس رسید پرداخت را بفرستید:", reply_markup=main_kb(u.id))
+                return
+            else:
+                await update.message.reply_text("درخواست پرداخت معتبری یافت نشد.")
+
     await update.message.reply_text(
         f"👋 سلام {esc(u.first_name)}!\n\nبه ربات سفارش پروژه دانشگاهی خوش آمدی.\nبرای شروع روی «ثبت سفارش جدید» کلیک کن.",
-        reply_markup=MAIN_KB)
+        reply_markup=main_kb(u.id))
 
+async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    user_sessions.pop(u.id, None); admin_sessions.pop(u.id, None)
+    await update.message.reply_text("لغو شد.", reply_markup=main_kb(u.id))
+
+async def admin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    if u.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔️ دسترسی محدود.")
+        return
+    await update.message.reply_text("⚙️ پنل مدیریت", reply_markup=admin_menu_kb())
+
+# ── مسیریابی پیام‌های متنی ──
 async def handle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
+    u = update.effective_user
     if msg.document or msg.photo or msg.video or msg.voice:
         return await handle_file(update, ctx)
     if not msg.text: return
-    t = msg.text; u = update.effective_user
+    t = msg.text
+
+    # منوی مدیریت (ادمین)
+    if t == "⚙️ پنل مدیریت":
+        if u.id in ADMIN_IDS:
+            await msg.reply_text("⚙️ پنل مدیریت", reply_markup=admin_menu_kb())
+        else:
+            await msg.reply_text("⛔️ دسترسی محدود.")
+        return
+
+    # حالت‌های در حال انجام ادمین (دریافت مقدار از ادمین)
+    if u.id in ADMIN_IDS and u.id in admin_sessions:
+        if await admin_text(update, ctx): return
+
+    # حالت‌های در حال انجام مشتری
+    s = user_sessions.get(u.id, {})
+    if s.get("state") == "entering_desc":
+        return await order_desc(update, ctx)
+
     handlers = {
         "📋 ثبت سفارش جدید": order_start, "📂 سفارش‌های من": my_orders,
-        "👥 باشگاه مشتریان": club, "💰 کیف پول": wallet_cmd, "📞 پشتیبانی": support_cmd
+        "👥 باشگاه مشتریان": club, "💰 کیف پول": wallet_cmd, "📞 پشتیبانی": support_cmd,
+        "🧾 ارسال رسید پرداخت": receipt_cmd,
     }
     if t in handlers: return await handlers[t](update, ctx)
-    s = user_sessions.get(u.id, {})
-    if s.get("state") == "entering_desc": return await order_desc(update, ctx)
-    await msg.reply_text("از دکمه‌های زیر استفاده کن 👇", reply_markup=MAIN_KB)
+    await msg.reply_text("از دکمه‌های زیر استفاده کن 👇", reply_markup=main_kb(u.id))
 
+# ── ثبت سفارش ──
 async def order_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cats = cat_all(True)
-    if not cats: await update.message.reply_text("⚠️ دسته‌بندی فعالی وجود ندارد.", reply_markup=MAIN_KB); return
-    user_sessions[update.effective_user.id] = {"state": "selecting_category"}
+    if not cats:
+        await update.message.reply_text("⚠️ دسته‌بندی فعالی وجود ندارد.", reply_markup=main_kb(update.effective_user.id)); return
     kb = [[InlineKeyboardButton(f"{c['name']} — {c['price']:,} تومان", callback_data=f"cat_{c['id']}")] for c in cats]
     kb.append([InlineKeyboardButton("انصراف", callback_data="cancel")])
     await update.message.reply_text("🎯 نوع پروژه را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def cat_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); u = q.from_user
-    if q.data == "cancel": user_sessions.pop(u.id, None); await q.edit_message_text("لغو شد."); return
+    if q.data == "cancel":
+        user_sessions.pop(u.id, None); await q.edit_message_text("لغو شد."); return
     cid = q.data.replace("cat_", ""); cat = cat_get(cid)
     if not cat: await q.edit_message_text("⚠️ دسته‌بندی نامعتبر."); return
     user_sessions[u.id] = {"state": "entering_desc", "category_id": cid}
     adv = int(cat["price"] * cat["advance_percent"] / 100)
-    await q.edit_message_text(f"📌 {cat['name']}\n💰 قیمت: {cat['price']:,} تومان\n💳 پیش‌پرداخت: {adv:,} تومان\n\n📝 توضیحات پروژه را بنویسید:")
+    adv_line = f"💳 پیش‌پرداخت: {adv:,} تومان" if settings_get().get("advance_enabled", True) else "💳 پرداخت کامل (پیش‌پرداخت غیرفعال)"
+    await q.edit_message_text(f"📌 {cat['name']}\n💰 قیمت: {cat['price']:,} تومان\n{adv_line}\n\n📝 توضیحات پروژه را بنویسید:")
 
 async def order_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; s = user_sessions.pop(u.id, {})
@@ -588,7 +498,10 @@ async def order_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ اتمام آپلود", callback_data=f"finish_{o['id']}")],
             [InlineKeyboardButton("⏭ رد کردن", callback_data=f"skip_{o['id']}")]]))
     for aid in ADMIN_IDS:
-        try: await ctx.bot.send_message(aid, f"📬 سفارش جدید #{o['id']}\nاز: {esc(u.first_name)} (@{u.username or '---'})\nدسته: {o['category_name']}\nمبلغ: {o['price']:,} تومان")
+        try:
+            await ctx.bot.send_message(aid,
+                f"📬 سفارش جدید #{o['id']}\nاز: {esc(u.first_name)} (@{u.username or '---'})\nدسته: {o['category_name']}\nمبلغ: {o['price']:,} تومان",
+                reply_markup=InlineKeyboardMarkup([[btn("📦 مشاهده سفارش", f"o_{o['id']}")]]))
         except: pass
 
 async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -596,8 +509,43 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     file = msg.document or (msg.photo[-1] if msg.photo else None) or msg.video or msg.voice
     if not file: return
     fname = getattr(file, 'file_name', None) or f"file_{file.file_id[:8]}"
+    tf = await ctx.bot.get_file(file.file_id)
+    ext = Path(tf.file_path or "").suffix or (".jpg" if msg.photo else "")
+    if not Path(fname).suffix: fname = f"{fname}{ext}"
+
+    # ── ارسال رسید پرداخت ──
+    s = user_sessions.get(u.id, {})
+    if s.get("state") == "awaiting_receipt":
+        pid = s.get("payment_id")
+        p = pay_get(pid) if pid else None
+        o = order_get(p["order_id"]) if p else None
+        if not p or not o or o["user_id"] != u.id:
+            user_sessions.pop(u.id, None)
+            await msg.reply_text("⚠️ درخواست پرداخت معتبری یافت نشد. دوباره تلاش کنید.")
+            return
+        try:
+            sp = UPLOAD_FOLDER / f"rcpt_{_uid()}_{fname}"
+            await tf.download_to_drive(sp)
+        except Exception:
+            sp = None
+        pay_update(pid, receipt_file_id=file.file_id, receipt_path=str(sp) if sp else None, receipt_sent_at=_now())
+        user_sessions.pop(u.id, None)
+        await msg.reply_text("✅ رسید شما دریافت شد و برای مدیر ارسال شد.\nپس از تأیید، به شما اطلاع داده می‌شود.")
+        for aid in ADMIN_IDS:
+            try:
+                kb = InlineKeyboardMarkup([[btn("✅ تأیید", f"payappr_{pid}"), btn("❌ رد", f"payrej_{pid}")]])
+                cap = (f"🧾 رسید پرداخت\nسفارش #{o['id']} — {o['category_name']}\n"
+                       f"نوع: {'پیش‌پرداخت' if p['payment_type'] == 'advance' else 'پرداخت نهایی'}\n"
+                       f"مبلغ: {p['amount']:,} تومان\nاز: {esc(u.first_name or u.id)}")
+                if msg.photo:
+                    await ctx.bot.send_photo(aid, file.file_id, caption=cap, reply_markup=kb)
+                else:
+                    await ctx.bot.send_document(aid, file.file_id, caption=cap, reply_markup=kb)
+            except: pass
+        return
+
+    # ── فایل مدارک سفارش ──
     try:
-        tf = await ctx.bot.get_file(file.file_id)
         sp = UPLOAD_FOLDER / f"{_uid()}_{fname}"
         await tf.download_to_drive(sp)
         oo = order_all(uid_=u.id)
@@ -613,24 +561,96 @@ async def finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     o = order_get(oid)
     if not o or o["user_id"] != u.id: await q.edit_message_text("⚠️ سفارش یافت نشد."); return
     await q.edit_message_text("✅ فایل‌ها دریافت شد!" if data.startswith("finish_") else "✅ اطلاعات ثبت شد.")
-    kb = [[InlineKeyboardButton(f"💳 پرداخت پیش‌پرداخت ({o['advance_amount']:,} تومان)", web_app=WebAppInfo(url=f"{PUBLIC_URL}/panel?order={oid}"))]]
-    await ctx.bot.send_message(u.id, f"📋 سفارش #{oid}\n💰 مبلغ: {o['price']:,} تومان\n💳 پیش‌پرداخت: {o['advance_amount']:,} تومان\n\nبرای پرداخت روی دکمه زیر کلیک کن:", reply_markup=InlineKeyboardMarkup(kb))
+    p = get_or_create_payment(o)
+    pay_type = "پیش‌پرداخت" if p["payment_type"] == "advance" else "پرداخت (مبلغ کامل)" if not settings_get().get("advance_enabled", True) else "پرداخت نهایی"
+    txt = (f"📋 سفارش #{oid}\n💰 مبلغ: {o['price']:,} تومان\n"
+           f"💳 {pay_type}: {p['amount']:,} تومان\n\n"
+           f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+           f"🧾 پس از واریز، روی «ارسال رسید پرداخت» بزنید و عکس رسید را بفرستید.")
+    kb = InlineKeyboardMarkup([
+        [btn("🧾 ارسال رسید پرداخت", f"send_receipt_{oid}")],
+        [btn("📋 جزئیات سفارش", f"co_{oid}")]])
+    await ctx.bot.send_message(u.id, txt, reply_markup=kb)
+
+# ── سفارش‌های من ──
+def orders_list_markup(uid_):
+    oo = order_all(uid_=uid_)
+    limit = int(settings_get().get("customer_orders_display_limit", 8) or 8)
+    shown = oo[:limit]
+    if not oo: return "📂 سفارشی نداری.", None
+    lines = [f"📂 سفارش‌های شما ({len(shown)} از {len(oo)}):", ""]
+    for o in shown:
+        lines.append(f"▸ #{o['id']} — {o['category_name']} | {STATUS_LABELS.get(o['status'], o['status'])} | {o['price']:,} تومان")
+    if len(oo) > limit: lines.append(f"\nو {len(oo) - limit} سفارش دیگر…")
+    rows = [[btn(f"#{o['id']} — {o['category_name']}", f"co_{o['id']}")] for o in shown]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user; oo = order_all(uid_=u.id)
-    if not oo: await update.message.reply_text("📂 سفارشی نداری.", reply_markup=MAIN_KB); return
-    sm = {"pending": "⏳ در انتظار", "paid_advance": "💰 در حال انجام", "in_progress": "🔄 در حال انجام",
-          "completed": "✅ تکمیل", "paid_final": "💵 تسویه", "cancelled": "❌ لغو"}
-    txt = "📂 سفارش‌های شما:\n\n"
-    for o in oo[:8]: txt += f"▸ #{o['id']} — {o['category_name']}\n   {sm.get(o['status'], o['status'])} | {o['price']:,} تومان\n\n"
-    await update.message.reply_text(txt, reply_markup=MAIN_KB)
+    u = update.effective_user
+    txt, kb = orders_list_markup(u.id)
+    await update.message.reply_text(txt, reply_markup=kb)
 
+def cust_order_text(o):
+    lines = [f"📦 سفارش #{o['id']} — {STATUS_LABELS.get(o['status'], o['status'])}", "",
+             f"🗂 {o['category_name']}",
+             f"💰 قیمت: {o['price']:,} تومان",
+             f"💳 پیش‌پرداخت: {o['advance_amount']:,} تومان",
+             f"💵 پرداخت نهایی: {o['final_amount']:,} تومان"]
+    if o.get("discount"): lines.append(f"🎁 تخفیف: {o['discount']:,} تومان")
+    if o.get("description"): lines += ["", f"📝 {o['description']}"]
+    fs = file_get(o["id"]); ps = pay_by_order(o["id"])
+    lines += ["", f"📎 فایل‌ها: {len(fs)}"]
+    if ps:
+        lines.append("💳 پرداخت‌ها:")
+        for p in ps:
+            lines.append(f"   • {'پیش‌پرداخت' if p['payment_type'] == 'advance' else 'نهایی'}: {p['amount']:,} تومان — {PAY_LABEL.get(p['status'], p['status'])}")
+    return "\n".join(lines)
+
+async def cust_order_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer(); u = q.from_user
+    d = q.data
+    if d == "co_list":
+        txt, kb = orders_list_markup(u.id)
+        await q.edit_message_text(txt, reply_markup=kb)
+        return
+    oid = d.replace("co_", "")
+    o = order_get(oid)
+    if not o or o["user_id"] != u.id:
+        await q.answer("سفارش یافت نشد", show_alert=True); return
+    rows = []
+    if o["status"] in ("pending", "completed"):
+        rows.append([btn("💳 اطلاعات پرداخت", f"payinfo_{oid}")])
+    rows.append([btn("↩️ بازگشت به لیست", "co_list")])
+    await q.edit_message_text(cust_order_text(o), reply_markup=InlineKeyboardMarkup(rows))
+
+async def payinfo_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer(); u = q.from_user
+    oid = q.data.replace("payinfo_", "")
+    o = order_get(oid)
+    if not o or o["user_id"] != u.id:
+        await q.answer("سفارش یافت نشد", show_alert=True); return
+    p = get_or_create_payment(o)
+    txt = (f"💳 سفارش #{oid}\n"
+           f"💰 مبلغ قابل پرداخت: {p['amount']:,} تومان\n\n"
+           f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+           f"🧾 پس از واریز، «ارسال رسید» را بزنید و عکس رسید را بفرستید.")
+    kb = InlineKeyboardMarkup([
+        [btn("🧾 ارسال رسید پرداخت", f"send_receipt_{oid}")],
+        [btn("↩️ بازگشت", f"co_{oid}")]])
+    await q.edit_message_text(txt, reply_markup=kb)
+
+# ── باشگاه، کیف پول، پشتیبانی ──
 async def club(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; ref = ref_get_by_user(u.id) or ref_create(u.id); s = settings_get()
-    txt = (f"👥 باشگاه مشتریان\n\n🔗 کد معرف شما: <code>{ref['code']}</code>\n👤 تعداد دعوت: {ref['invited_count']} نفر\n"
-           f"💰 پاداش دریافتی: {ref['total_earned']:,} تومان\n\n🎁 دعوت هر نفر: {s.get('referral_reward', 50000):,} تومان\n"
-           f"🎫 تخفیف برای دعوت‌شونده: {s.get('referral_discount_percent', 10)}%\n\n📋 کد معرف را هنگام ثبت سفارش وارد کنید.")
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=MAIN_KB)
+    link = referral_link(ref["code"])
+    txt = (f"👥 باشگاه مشتریان\n\n"
+           f"🔗 لینک معرف شما:\n<code>{link or ref['code']}</code>\n"
+           f"👤 تعداد دعوت: {ref['invited_count']} نفر\n"
+           f"💰 پاداش دریافتی: {ref['total_earned']:,} تومان\n\n"
+           f"🎁 پاداش هر دعوت: {s.get('referral_reward', 50000):,} تومان (به کیف پول اضافه می‌شود)\n"
+           f"🎫 تخفیف برای دعوت‌شونده: {s.get('referral_discount_percent', 10)}%\n\n"
+           f"📋 لینک را برای دوستانتان بفرستید تا عضو شوند.")
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=main_kb(u.id))
 
 async def wallet_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; w = wallet_ensure(u.id)
@@ -638,25 +658,540 @@ async def wallet_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for t in w.get("transactions", [])[-5:][::-1]:
         sign, color = ("+", "🟢") if t["type"] == "credit" else ("-", "🔴")
         txt += f"{color} {sign}{t['amount']:,} — {t.get('description', '')}\n"
-    await update.message.reply_text(txt, reply_markup=MAIN_KB)
+    if not w.get("transactions"): txt += "تراکنشی ثبت نشده است."
+    await update.message.reply_text(txt, reply_markup=main_kb(u.id))
 
 async def support_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     s = settings_get(); txt = "📞 پشتیبانی:\n"
     if s.get("support_phone"): txt += f"📱 {s['support_phone']}\n"
     if s.get("support_telegram"): txt += f"💬 @{s['support_telegram']}\n"
     if not s.get("support_phone") and not s.get("support_telegram"): txt += "از همین ربات پیام دهید."
-    await update.message.reply_text(txt, reply_markup=MAIN_KB)
+    await update.message.reply_text(txt, reply_markup=main_kb(u.id))
+
+# ── ارسال رسید (دکمه کیبورد) ──
+async def receipt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    oo = [o for o in order_all(uid_=u.id) if o["status"] in ("pending", "completed")]
+    if not oo:
+        await update.message.reply_text("⚠️ سفارشی برای پرداخت ندارید.", reply_markup=main_kb(u.id)); return
+    if len(oo) == 1:
+        await ask_receipt(update, ctx, oo[0]); return
+    kb = [[btn(f"#{o['id']} — {o['category_name']} ({payment_amount(o, payment_stage(o)):,} تومان)", f"send_receipt_{o['id']}")] for o in oo[:8]]
+    await update.message.reply_text("🧾 برای کدام سفارش می‌خواهید رسید بفرستید؟", reply_markup=InlineKeyboardMarkup(kb))
+
+async def ask_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE, o):
+    u = update.effective_user
+    p = get_or_create_payment(o)
+    user_sessions[u.id] = {"state": "awaiting_receipt", "payment_id": p["id"]}
+    await update.message.reply_text(
+        f"🧾 سفارش #{o['id']} — مبلغ {p['amount']:,} تومان\n\n"
+        f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+        f"📸 عکس رسید پرداخت را بفرستید:", reply_markup=main_kb(u.id))
+
+async def send_receipt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer(); u = q.from_user
+    oid = q.data.replace("send_receipt_", "")
+    o = order_get(oid)
+    if not o or o["user_id"] != u.id:
+        await q.answer("سفارش یافت نشد", show_alert=True); return
+    p = get_or_create_payment(o)
+    user_sessions[u.id] = {"state": "awaiting_receipt", "payment_id": p["id"]}
+    try:
+        await q.edit_message_text(
+            f"🧾 سفارش #{oid} — مبلغ {p['amount']:,} تومان\n\n"
+            f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+            f"📸 عکس رسید پرداخت را بفرستید:")
+    except Exception:
+        await ctx.bot.send_message(u.id, "📸 عکس رسید پرداخت را بفرستید:")
+
+# ═══════════════ ADMIN: تأیید/رد رسید ═══════════════
+async def receipt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.from_user.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر می‌تواند تأیید کند", show_alert=True); return
+    pid = q.data.split("_", 1)[1]
+    p = pay_get(pid)
+    if not p: await q.edit_message_text("پرداخت یافت نشد."); return
+    o = order_get(p["order_id"])
+    if q.data.startswith("payappr_"):
+        pay_update(pid, admin_approved=True, status="paid", approved_at=_now(), approved_by=q.from_user.id)
+        if o:
+            if p["payment_type"] == "advance":
+                order_update(o["id"], status="paid_advance")
+            elif o["status"] == "completed":
+                order_update(o["id"], status="paid_final")
+            else:
+                order_update(o["id"], status="paid_advance")
+            _notify_user(o["user_id"], f"✅ رسید پرداخت {p['amount']:,} تومان برای سفارش #{o['id']} تأیید شد. متشکریم!")
+        try: await q.edit_message_caption("✅ پرداخت تأیید شد.")
+        except Exception: await q.edit_message_text("✅ پرداخت تأیید شد.")
+    else:
+        pay_update(pid, admin_approved=False, status="failed")
+        if o:
+            _notify_user(o["user_id"], f"❌ رسید پرداخت سفارش #{o['id']} رد شد. لطفاً با پشتیبانی تماس بگیرید.")
+        try: await q.edit_message_caption("❌ پرداخت رد شد.")
+        except Exception: await q.edit_message_text("❌ پرداخت رد شد.")
+
+# ═══════════════ ADMIN: منوها ═══════════════
+def admin_stats_text():
+    d = dashboard()
+    return (f"📊 آمار کلی\n\n"
+            f"👥 کاربران: {d['total_users']}\n"
+            f"📦 کل سفارش‌ها: {d['total_orders']}\n"
+            f"   ⏳ در انتظار: {d['pending']}\n"
+            f"   🔄 در حال انجام: {d['in_progress']}\n"
+            f"   ✅ تکمیل: {d['completed']}\n"
+            f"   ❌ لغو: {d['cancelled']}\n"
+            f"💰 درآمد تأییدشده: {d['total_earned']:,} تومان\n"
+            f"🧾 رسید در انتظار تأیید: {d['pending_receipts']}\n"
+            f"🗂 دسته‌بندی فعال: {d['categories']}")
+
+def admin_orders_view(flt="all"):
+    oo = order_all(status=None if flt == "all" else flt)
+    shown = oo[:8]
+    if not shown:
+        txt = f"📦 سفارش‌ها ({len(oo)} مورد)\n\nچیزی نیست."
+    else:
+        lines = [f"📦 سفارش‌ها ({len(oo)} مورد)", ""]
+        for o in shown:
+            lines.append(f"▸ #{o['id']} — {o['category_name']} | {STATUS_LABELS.get(o['status'], o['status'])} | {o['price']:,} تومان")
+        txt = "\n".join(lines)
+    rows = [[btn("همه", "of_all"), btn("در انتظار", "of_pending"), btn("پیش‌پرداخت", "of_paid_advance"),
+             btn("در حال انجام", "of_in_progress"), btn("تکمیل", "of_completed"), btn("لغو", "of_cancelled")]]
+    rows += [[btn(f"#{o['id']} — {o['category_name']}", f"o_{o['id']}")] for o in shown]
+    rows.append([btn("↩️ منوی مدیریت", "adm_menu")])
+    return txt, InlineKeyboardMarkup(rows)
+
+def admin_order_view(o):
+    fs = file_get(o["id"]); ps = pay_by_order(o["id"])
+    lines = [f"📦 سفارش #{o['id']} — {STATUS_LABELS.get(o['status'], o['status'])}",
+             f"👤 {o['first_name'] or '-'} @{o['username'] or '-'} (ID: {o['user_id']})",
+             f"🗂 {o['category_name']}",
+             f"💰 قیمت: {o['price']:,} | پیش: {o['advance_amount']:,} | نهایی: {o['final_amount']:,}"]
+    if o.get("discount"): lines.append(f"🎁 تخفیف: {o['discount']:,}")
+    if o.get("description"): lines.append(f"\n📝 {o['description']}")
+    if fs:
+        lines.append(f"\n📎 فایل‌ها ({len(fs)}):")
+        for f in fs: lines.append(f"  • {f['filename']}")
+    if ps:
+        lines.append("\n💳 پرداخت‌ها:")
+        for p in ps:
+            lines.append(f"  • {'پیش‌پرداخت' if p['payment_type'] == 'advance' else 'نهایی'}: {p['amount']:,} — {PAY_LABEL.get(p['status'], p['status'])}")
+    rows = []
+    nxt = STATUS_FLOW.get(o["status"], [])
+    if nxt:
+        rows.append([btn(FLOW_BTN.get(s, s), f"s_{o['id']}_{s}") for s in nxt])
+    if fs:
+        rows.append([btn(f"📎 {f['filename'][:20]}", f"f_{f['id']}") for f in fs[:4]])
+    for p in ps:
+        if p["status"] == "pending":
+            row = [btn("✓ تأیید", f"payappr_{p['id']}"), btn("✗ رد", f"payrej_{p['id']}")]
+            if p.get("receipt_file_id"): row.append(btn("🧾 رسید", f"r_{p['id']}"))
+            rows.append(row)
+    rows.append([btn("↩️ لیست سفارش‌ها", "of_all"), btn("🏠 منو", "adm_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_pays_view():
+    pp = sorted(_db()["payments"], key=lambda x: x["created_at"], reverse=True)
+    pending = [p for p in pp if p["status"] == "pending"]
+    rest = [p for p in pp if p["status"] != "pending"]
+    shown = (pending + rest)[:8]
+    lines = [f"💳 پرداخت‌ها ({len(pp)})", ""]
+    for p in shown:
+        lines.append(f"▸ #{p['order_id']} | {'پیش‌پرداخت' if p['payment_type'] == 'advance' else 'نهایی'} | {p['amount']:,} تومان | {PAY_LABEL.get(p['status'], p['status'])}")
+    if not shown: lines.append("پرداختی نیست.")
+    rows = []
+    for p in pending[:5]:
+        row = [btn("✓ تأیید", f"payappr_{p['id']}"), btn("✗ رد", f"payrej_{p['id']}")]
+        if p.get("receipt_file_id"): row.append(btn("🧾 رسید", f"r_{p['id']}"))
+        rows.append(row)
+    rows.append([btn("↩️ منوی مدیریت", "adm_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_cats_view():
+    cats = cat_all(False)
+    lines = ["🗂 دسته‌بندی‌ها", ""]
+    for i, cc in enumerate(cats, 1):
+        st = "✅" if cc.get("active", True) else "⛔️"
+        lines.append(f"{i}. {st} {cc['name']} — {cc['price']:,} تومان — پیش {cc.get('advance_percent', 50)}٪")
+    if not cats: lines.append("دسته‌ای تعریف نشده.")
+    rows = [[btn("💰 قیمت", f"cp_{cc['id']}"), btn("٪ پیش‌پرداخت", f"ca_{cc['id']}"), btn("فعال/غیرفعال", f"cd_{cc['id']}")] for cc in cats]
+    rows.append([btn("＋ افزودن دسته", "adm_catadd"), btn("↩️ منوی مدیریت", "adm_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_settings_view():
+    s = settings_get()
+    adv = "✅ روشن" if s.get("advance_enabled", True) else "❌ خاموش"
+    lines = [
+        "⚙️ تنظیمات", "",
+        f"💳 پیش‌پرداخت: {adv} — {s.get('advance_percent', 50)}٪",
+        f"📄 تعداد سفارش نمایش به مشتری: {s.get('customer_orders_display_limit', 8)}",
+        f"💳 شماره کارت: {s.get('bank_card_number') or '—'}",
+        f"👤 نام صاحب کارت: {s.get('bank_card_holder') or '—'}",
+        f"🏦 بانک: {s.get('bank_name') or '—'}",
+        f"📝 توضیح پرداخت: {s.get('bank_note') or '—'}",
+        f"🎁 پاداش هر دعوت: {s.get('referral_reward', 50000):,} تومان",
+        f"🎫 تخفیف دعوت‌شونده: {s.get('referral_discount_percent', 10)}٪",
+        f"📱 پشتیبانی: {s.get('support_phone') or '—'} / @{s.get('support_telegram') or '—'}",
+    ]
+    rows = [
+        [btn("💳 روشن/خاموش پیش‌پرداخت", "sa_adv"), btn("درصد پیش", "se_advpct"), btn("تعداد نمایش", "se_limit")],
+        [btn("شماره کارت", "se_card"), btn("نام صاحب", "se_holder"), btn("بانک", "se_bank")],
+        [btn("توضیح پرداخت", "se_note"), btn("پاداش دعوت", "se_reward"), btn("تخفیف", "se_refdisc")],
+        [btn("تلفن", "se_phone"), btn("تلگرام", "se_tg")],
+        [btn("↩️ منوی مدیریت", "adm_menu")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_users_view():
+    us = sorted(user_all(), key=lambda x: x.get("joined_at", ""), reverse=True)
+    lines = [f"👥 کاربران: {len(us)}", ""]
+    for uu in us[:15]:
+        lines.append(f"• {uu.get('first_name') or '—'} @{uu.get('username') or '—'} (ID: {uu['id']}) — {uu.get('joined_at', '')[:10]}")
+    if not us: lines.append("کاربری ثبت نشده.")
+    rows = [[btn("↩️ منوی مدیریت", "adm_menu")]]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_notifs_view():
+    rows = [[btn(f"{STATUS_LABELS[s]}", f"nt_{s}")] for s in STATUS_LABELS]
+    rows.append([btn("↩️ منوی مدیریت", "adm_menu")])
+    return "🔔 اعلان‌های وضعیت سفارش\nبرای هر وضعیت، پیام مشتری و ادمین را ویرایش کنید:", InlineKeyboardMarkup(rows)
+
+# ═══════════════ ADMIN: دریافت متن (state machine) ═══════════════
+SETTING_STATE_KEY = {
+    "set_advpct": "advance_percent", "set_limit": "customer_orders_display_limit",
+    "set_card": "bank_card_number", "set_holder": "bank_card_holder", "set_bank": "bank_name",
+    "set_note": "bank_note", "set_reward": "referral_reward", "set_refdisc": "referral_discount_percent",
+    "set_phone": "support_phone", "set_tg": "support_telegram",
+}
+SETTING_NUMERIC = {"set_advpct", "set_limit", "set_reward", "set_refdisc"}
+
+async def admin_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    st = admin_sessions.get(u.id)
+    if not st: return False
+    t = update.message.text.strip()
+    state = st["state"]
+
+    if state == "bc_text":
+        admin_sessions.pop(u.id, None)
+        n = len(user_all())
+        _broadcast(t)
+        await update.message.reply_text(f"📣 پیام همگانی به {n} کاربر در حال ارسال است.")
+        return True
+
+    if state == "cat_add_name":
+        st["data"]["name"] = t; st["state"] = "cat_add_desc"
+        await update.message.reply_text("📝 توضیحات دسته را بفرستید (یا «-» برای بدون توضیح):")
+        return True
+    if state == "cat_add_desc":
+        st["data"]["desc"] = "" if t == "-" else t; st["state"] = "cat_add_price"
+        await update.message.reply_text("💰 قیمت را به تومان بفرستید (مثلاً 500000):")
+        return True
+    if state == "cat_add_price":
+        v = to_int(t)
+        if v is None:
+            await update.message.reply_text("⚠️ لطفاً عدد بفرستید."); return True
+        st["data"]["price"] = v; st["state"] = "cat_add_pct"
+        await update.message.reply_text(f"٪ درصد پیش‌پرداخت را بفرستید (یا «-» برای پیش‌فرض {settings_get().get('advance_percent', 50)}):")
+        return True
+    if state == "cat_add_pct":
+        v = to_int(t) if t != "-" else None
+        d = st["data"]
+        cat_add(d["name"], d.get("desc", ""), d["price"], v)
+        admin_sessions.pop(u.id, None)
+        txt, kb = admin_cats_view()
+        await update.message.reply_text(f"✅ دسته «{d['name']}» اضافه شد.")
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+
+    if state == "cat_price":
+        v = to_int(t)
+        if v is None:
+            await update.message.reply_text("⚠️ لطفاً عدد بفرستید."); return True
+        cc = cat_update(st["cid"], price=v)
+        admin_sessions.pop(u.id, None)
+        await update.message.reply_text(f"✅ قیمت «{cc['name']}» شد {v:,} تومان.")
+        txt, kb = admin_cats_view()
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+    if state == "cat_pct":
+        v = to_int(t)
+        if v is None or v < 0 or v > 100:
+            await update.message.reply_text("⚠️ عدد بین 0 تا 100 بفرستید."); return True
+        cc = cat_update(st["cid"], advance_percent=v)
+        admin_sessions.pop(u.id, None)
+        await update.message.reply_text(f"✅ درصد پیش‌پرداخت «{cc['name']}» شد {v}٪.")
+        txt, kb = admin_cats_view()
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+
+    if state in SETTING_STATE_KEY:
+        key = SETTING_STATE_KEY[state]
+        if state in SETTING_NUMERIC:
+            v = to_int(t)
+            if v is None:
+                await update.message.reply_text("⚠️ لطفاً عدد بفرستید."); return True
+        else:
+            v = t.lstrip("@") if key == "support_telegram" else t
+        settings_update(**{key: v})
+        admin_sessions.pop(u.id, None)
+        await update.message.reply_text(f"✅ ذخیره شد.")
+        txt, kb = admin_settings_view()
+        await update.message.reply_text(txt, reply_markup=kb)
+        return True
+
+    if state in ("notif_user", "notif_admin"):
+        status = st["status"]
+        db = _db()
+        n = db["notifications"].get(status, {"to_user": "", "to_admin": ""})
+        n["to_user" if state == "notif_user" else "to_admin"] = t
+        db["notifications"][status] = n
+        _save(db)
+        admin_sessions.pop(u.id, None)
+        await update.message.reply_text(f"✅ پیام «{STATUS_LABELS[status]}» ذخیره شد.")
+        return True
+
+    return False
+
+# ═══════════════ ADMIN: کال‌بک‌ها ═══════════════
+async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; d = q.data
+    u = q.from_user
+    if u.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر", show_alert=True); return
+
+    if d == "adm_menu":
+        await q.answer(); await q.edit_message_text("⚙️ پنل مدیریت", reply_markup=admin_menu_kb()); return
+    if d == "adm_close":
+        try: await q.message.delete()
+        except Exception:
+            await q.answer(); await q.edit_message_text("بسته شد.")
+        return
+    if d == "adm_stats":
+        await q.answer()
+        await q.edit_message_text(admin_stats_text(), reply_markup=InlineKeyboardMarkup([[btn("↩️ منوی مدیریت", "adm_menu")]])); return
+    if d == "adm_orders":
+        await q.answer(); txt, kb = admin_orders_view("all"); await q.edit_message_text(txt, reply_markup=kb); return
+    if d.startswith("of_"):
+        await q.answer(); txt, kb = admin_orders_view(d[3:]); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_pays":
+        await q.answer(); txt, kb = admin_pays_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_cats":
+        await q.answer(); txt, kb = admin_cats_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_set":
+        await q.answer(); txt, kb = admin_settings_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_users":
+        await q.answer(); txt, kb = admin_users_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_notifs":
+        await q.answer(); txt, kb = admin_notifs_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d == "adm_bc":
+        await q.answer()
+        admin_sessions[u.id] = {"state": "bc_text"}
+        await q.edit_message_text("📣 متن پیام همگانی را بفرستید (یا /cancel):"); return
+    if d == "adm_catadd":
+        await q.answer()
+        admin_sessions[u.id] = {"state": "cat_add_name", "data": {}}
+        await q.edit_message_text("➕ نام دسته جدید را بفرستید (یا /cancel):"); return
+
+    if d.startswith("cp_") or d.startswith("ca_"):
+        await q.answer()
+        cid = d[3:]; cc = cat_get(cid)
+        if not cc: return
+        if d.startswith("cp_"):
+            admin_sessions[u.id] = {"state": "cat_price", "cid": cid}
+            await q.edit_message_text(f"💰 قیمت جدید «{cc['name']}» را به تومان بفرستید (یا /cancel):")
+        else:
+            admin_sessions[u.id] = {"state": "cat_pct", "cid": cid}
+            await q.edit_message_text(f"٪ درصد پیش‌پرداخت جدید «{cc['name']}» را بفرستید (یا /cancel):")
+        return
+    if d.startswith("cd_"):
+        cid = d[3:]; cc = cat_get(cid)
+        if cc:
+            cat_update(cid, active=not cc.get("active", True))
+        await q.answer()
+        txt, kb = admin_cats_view(); await q.edit_message_text(txt, reply_markup=kb); return
+
+    if d == "sa_adv":
+        s = settings_get()
+        settings_update(advance_enabled=not s.get("advance_enabled", True))
+        await q.answer("✅")
+        txt, kb = admin_settings_view(); await q.edit_message_text(txt, reply_markup=kb); return
+    if d.startswith("se_"):
+        await q.answer()
+        prompts = {
+            "se_advpct": ("set_advpct", "٪ درصد پیش‌پرداخت (0 تا 100) را بفرستید:"),
+            "se_limit": ("set_limit", "تعداد سفارش‌های نمایش به مشتری را بفرستید:"),
+            "se_card": ("set_card", "شماره کارت را بفرستید:"),
+            "se_holder": ("set_holder", "نام صاحب کارت را بفرستید:"),
+            "se_bank": ("set_bank", "نام بانک را بفرستید:"),
+            "se_note": ("set_note", "توضیح پرداخت را بفرستید (یا «-»):"),
+            "se_reward": ("set_reward", "مبلغ پاداش هر دعوت (تومان) را بفرستید:"),
+            "se_refdisc": ("set_refdisc", "٪ تخفیف دعوت‌شونده (0 تا 100) را بفرستید:"),
+            "se_phone": ("set_phone", "تلفن پشتیبانی را بفرستید (یا «-»):"),
+            "se_tg": ("set_tg", "تلگرام پشتیبانی بدون @ را بفرستید (یا «-»):"),
+        }
+        state, prompt = prompts.get(d, (None, None))
+        if state:
+            admin_sessions[u.id] = {"state": state}
+            await q.edit_message_text(prompt + "\n(یا /cancel)")
+        return
+
+    if d.startswith("nt_"):
+        await q.answer()
+        status = d[3:]
+        n = notif_get().get(status, {"to_user": "", "to_admin": ""})
+        txt = (f"🔔 اعلان «{STATUS_LABELS.get(status, status)}»\n\n"
+               f"👤 به مشتری:\n{n.get('to_user') or '—'}\n\n"
+               f"👨‍💼 به ادمین:\n{n.get('to_admin') or '—'}")
+        kb = InlineKeyboardMarkup([
+            [btn("✏️ ویرایش پیام مشتری", f"nu_{status}"), btn("✏️ ویرایش پیام ادمین", f"na_{status}")],
+            [btn("↩️ لیست اعلان‌ها", "adm_notifs")]])
+        await q.edit_message_text(txt, reply_markup=kb); return
+    if d.startswith("nu_") or d.startswith("na_"):
+        await q.answer()
+        status = d[3:]
+        admin_sessions[u.id] = {"state": "notif_user" if d.startswith("nu_") else "notif_admin", "status": status}
+        await q.edit_message_text(f"✏️ پیام جدید برای «{STATUS_LABELS.get(status, status)}» را بفرستید (یا /cancel):"); return
+
+async def o_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.from_user.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر", show_alert=True); return
+    oid = q.data[2:]
+    o = order_get(oid)
+    if not o: await q.edit_message_text("سفارش یافت نشد."); return
+    txt, kb = admin_order_view(o)
+    await q.edit_message_text(txt, reply_markup=kb)
+
+async def s_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.from_user.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر", show_alert=True); return
+    parts = q.data.split("_", 2)
+    oid, ns = parts[1], parts[2]
+    if ns not in STATUS_LABELS: return
+    o = order_update(oid, status=ns)
+    if o:
+        txt = notif_get().get(ns, {}).get("to_user", "")
+        if txt: _notify_user(o["user_id"], txt)
+        if ns == "completed":
+            p = get_or_create_payment(o)
+            msg = (f"🎉 پروژه #{o['id']} تکمیل شد!\n"
+                   f"💰 مبلغ نهایی قابل پرداخت: {p['amount']:,} تومان\n\n"
+                   f"🏦 اطلاعات پرداخت:\n{bank_info_text()}\n\n"
+                   f"🧾 پس از واریز روی «ارسال رسید پرداخت» بزنید و عکس رسید را بفرستید.")
+            _notify_user_kb(o["user_id"], msg, [[btn("🧾 ارسال رسید پرداخت", f"send_receipt_{o['id']}")]])
+    o2 = order_get(oid)
+    if o2:
+        txt, kb = admin_order_view(o2)
+        await q.edit_message_text(txt, reply_markup=kb)
+
+async def f_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر", show_alert=True); return
+    fid = q.data[2:]
+    fl = next((f for f in _db()["files"] if f["id"] == fid), None)
+    if not fl:
+        await q.answer("فایل یافت نشد"); return
+    await q.answer("📎 در حال ارسال…")
+    try:
+        if fl.get("telegram_file_id"):
+            await ctx.bot.send_document(q.from_user.id, fl["telegram_file_id"], filename=fl["filename"])
+        else:
+            p = Path(fl["file_path"])
+            if p.exists():
+                with open(p, "rb") as fh:
+                    await ctx.bot.send_document(q.from_user.id, fh, filename=fl["filename"])
+    except Exception:
+        try: await ctx.bot.send_message(q.from_user.id, "⚠️ خطا در ارسال فایل.")
+        except: pass
+
+async def r_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.from_user.id not in ADMIN_IDS:
+        await q.answer("⛔️ فقط مدیر", show_alert=True); return
+    pid = q.data[2:]
+    p = pay_get(pid)
+    if not p or not p.get("receipt_file_id"):
+        await q.answer("رسیدی موجود نیست"); return
+    await q.answer("🧾 در حال ارسال…")
+    fid = p["receipt_file_id"]
+    try:
+        await ctx.bot.send_photo(q.from_user.id, fid, caption=f"🧾 رسید پرداخت {p['amount']:,} تومان — سفارش #{p['order_id']}")
+    except Exception:
+        try: await ctx.bot.send_document(q.from_user.id, fid, caption=f"🧾 رسید پرداخت")
+        except Exception: pass
+
+# ═══════════════ مسیریاب کال‌بک‌ها ═══════════════
+async def callback_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q: return
+    d = q.data
+    if d.startswith("cat_") or d == "cancel": return await cat_callback(update, ctx)
+    if d.startswith("finish_") or d.startswith("skip_"): return await finish_callback(update, ctx)
+    if d.startswith("send_receipt_"): return await send_receipt_callback(update, ctx)
+    if d.startswith("payappr_") or d.startswith("payrej_"): return await receipt_callback(update, ctx)
+    if d.startswith("co_"): return await cust_order_cb(update, ctx)
+    if d.startswith("payinfo_"): return await payinfo_cb(update, ctx)
+    if d.startswith("o_"): return await o_cb(update, ctx)
+    if d.startswith("s_"): return await s_cb(update, ctx)
+    if d.startswith("f_"): return await f_cb(update, ctx)
+    if d.startswith("r_"): return await r_cb(update, ctx)
+    return await admin_cb(update, ctx)
 
 # ═══════════════ NOTIFICATION ═══════════════
 def _notify_user(uid_, msg):
-    """Send a message to a Telegram user (non-blocking)."""
     def _run():
-        import asyncio
         async def _send():
-            app_bot = Application.builder().token(BOT_TOKEN).build()
-            try: await app_bot.bot.send_message(chat_id=uid_, text=msg)
+            app = Application.builder().token(BOT_TOKEN).build()
+            try:
+                await app.initialize()
+                await app.bot.send_message(chat_id=uid_, text=msg)
             except: pass
-            await app_bot.shutdown()
+            finally:
+                try: await app.shutdown()
+                except: pass
+        try:
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            loop.run_until_complete(_send()); loop.close()
+        except: pass
+    threading.Thread(target=_run, daemon=True).start()
+
+def _notify_user_kb(uid_, msg, buttons):
+    def _run():
+        async def _send():
+            app = Application.builder().token(BOT_TOKEN).build()
+            try:
+                await app.initialize()
+                await app.bot.send_message(chat_id=uid_, text=msg, reply_markup=InlineKeyboardMarkup(buttons))
+            except: pass
+            finally:
+                try: await app.shutdown()
+                except: pass
+        try:
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            loop.run_until_complete(_send()); loop.close()
+        except: pass
+    threading.Thread(target=_run, daemon=True).start()
+
+def _broadcast(text):
+    def _run():
+        async def _send():
+            app = Application.builder().token(BOT_TOKEN).build()
+            ok = 0
+            try:
+                await app.initialize()
+                for u in user_all():
+                    try:
+                        await app.bot.send_message(chat_id=u["id"], text=text)
+                        ok += 1
+                    except: pass
+                log.info(f"📣 broadcast sent to {ok}/{len(user_all())} users")
+            finally:
+                try: await app.shutdown()
+                except: pass
         try:
             loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
             loop.run_until_complete(_send()); loop.close()
@@ -677,39 +1212,40 @@ def seed():
 
 # ═══════════════ MAIN ═══════════════
 def run_flask():
-    """Run Flask in daemon thread."""
     flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
 async def run_bot():
-    """Async: build, start, and poll forever."""
     seed()
-    global PUBLIC_URL
-    PUBLIC_URL = detect_url()
-    if not PUBLIC_URL:
-        PUBLIC_URL = f"http://localhost:{PORT}"
-    log.info(f"PUBLIC_URL = {PUBLIC_URL}")
-
     try:
         r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
         if r.json().get("ok"):
             os.environ["BOT_USERNAME"] = r.json()["result"]["username"]
             log.info(f"bot: @{os.environ['BOT_USERNAME']}")
-    except: pass
+        else:
+            log.error(f"getMe failed: {r.json()}")
+    except Exception as e:
+        log.error(f"getMe error (will retry): {e}")
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(cat_callback, pattern="^cat_"))
-    app.add_handler(CallbackQueryHandler(cat_callback, pattern="^cancel$"))
-    app.add_handler(CallbackQueryHandler(finish_callback, pattern="^finish_"))
-    app.add_handler(CallbackQueryHandler(finish_callback, pattern="^skip_"))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all))
+    while True:
+        try:
+            app = Application.builder().token(BOT_TOKEN).build()
+            app.add_handler(CommandHandler("start", start))
+            app.add_handler(CommandHandler("cancel", cancel_cmd))
+            app.add_handler(CommandHandler("admin", admin_cmd))
+            app.add_handler(CallbackQueryHandler(callback_router))
+            app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all))
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            log.info("🤖 Bot polling started | همه چیز داخل ربات")
+            break
+        except Exception as e:
+            log.error(f"⚠️ bot polling error (retrying in 10s): {e}")
+            try:
+                await app.shutdown()
+            except: pass
+            await asyncio.sleep(10)
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    log.info(f"🤖 Bot polling started | 🌐 {PUBLIC_URL}/admin | 👤 {PUBLIC_URL}/panel")
-
-    # Keep alive forever
     while True:
         await asyncio.sleep(3600)
 
