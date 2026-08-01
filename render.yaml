@@ -6,15 +6,11 @@ services:
     startCommand: python3 main.py
     healthCheckPath: /
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.9"
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_USER_IDS
         sync: false
-      - key: WEBAPP_URL
+      - key: BOT_USERNAME
         sync: false
       - key: WEBAPP_PORT
         value: "10000"
-      - key: BOT_USERNAME
-        sync: false
