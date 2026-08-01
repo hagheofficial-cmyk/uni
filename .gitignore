@@ -3,3 +3,4 @@ database.json
 uploads/
 __pycache__/
 *.pyc
+.venv/

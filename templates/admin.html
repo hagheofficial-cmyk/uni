@@ -228,6 +228,22 @@ pre.code{
   </div>
 </div>
 
+<!-- USERS / BROADCAST -->
+<div class="page" id="page-users">
+  <div class="card">
+    <div class="card-header"><div class="ic">📣</div><h3>پیام همگانی</h3></div>
+    <div class="form-group">
+      <label class="label">متن پیام (برای همه کاربران ارسال می‌شود)</label>
+      <textarea class="input textarea" id="broadcastMsg" placeholder="مثلاً: 🎉 تخفیف ویژه هفته..."></textarea>
+    </div>
+    <button class="btn btn-primary" onclick="sendBroadcast()">📣 ارسال پیام همگانی</button>
+  </div>
+  <div class="card">
+    <div class="card-header"><div class="ic">◉</div><h3>کاربران (<span id="userCount">0</span>)</h3></div>
+    <div id="usersList"></div>
+  </div>
+</div>
+
 <!-- SETTINGS -->
 <div class="page" id="page-settings">
   <div id="settingsForm"></div>
@@ -246,6 +262,10 @@ pre.code{
   <button class="nav-item" data-page="payments" onclick="navTo('payments')">
     <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><line x1="16" y1="12" x2="20" y2="12"/></svg>
     <span>پرداخت‌ها</span>
+  </button>
+  <button class="nav-item" data-page="users" onclick="navTo('users')">
+    <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    <span>کاربران</span>
   </button>
   <button class="nav-item" data-page="categories" onclick="navTo('categories')">
     <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="8" rx="2"/><rect x="3" y="14" width="8" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
@@ -312,11 +332,12 @@ function navTo(page) {
   if (pg) pg.classList.add('active');
   const nav = document.querySelector(`.nav-item[data-page="${page}"]`);
   if (nav) nav.classList.add('active');
-  const titles = {dashboard:'داشبورد',orders:'سفارشات',payments:'پرداخت‌ها',categories:'دسته‌بندی‌ها',notifications:'اعلان‌ها',settings:'تنظیمات'};
+  const titles = {dashboard:'داشبورد',orders:'سفارشات',payments:'پرداخت‌ها',users:'کاربران',categories:'دسته‌بندی‌ها',notifications:'اعلان‌ها',settings:'تنظیمات'};
   document.getElementById('pageTitle').textContent = titles[page] || '';
   if (page === 'dashboard') loadDashboard();
   if (page === 'orders') loadOrders();
   if (page === 'payments') loadPayments();
+  if (page === 'users') loadUsers();
   if (page === 'categories') loadCategories();
   if (page === 'notifications') loadNotifications();
   if (page === 'settings') loadSettings();
@@ -337,7 +358,9 @@ async function loadDashboard() {
       <div class="stat warn" onclick="navTo('orders');setTimeout(()=>filterOrders('pending'),200)"><div class="num">${d.pending}</div><div class="lbl">در انتظار</div></div>
       <div class="stat info" onclick="navTo('orders');setTimeout(()=>filterOrders('paid_advance'),200)"><div class="num">${d.in_progress}</div><div class="lbl">در حال انجام</div></div>
       <div class="stat ok" onclick="navTo('orders');setTimeout(()=>filterOrders('completed'),200)"><div class="num">${d.completed}</div><div class="lbl">تکمیل شده</div></div>
-      <div class="stat"><div class="num">${(d.total_earned||0).toLocaleString('fa-IR')}</div><div class="lbl">درآمد (تومان)</div></div>`;
+      <div class="stat" onclick="navTo('users')"><div class="num">${d.total_users||0}</div><div class="lbl">کاربران</div></div>
+      <div class="stat" onclick="navTo('payments')"><div class="num">${(d.total_earned||0).toLocaleString('fa-IR')}</div><div class="lbl">درآمد (تومان)</div></div>
+      <div class="stat warn" onclick="navTo('payments')"><div class="num">${d.pending_receipts||0}</div><div class="lbl">رسید در انتظار</div></div>`;
     await loadOrders();
     document.getElementById('recentOrders').innerHTML = orders.slice(0,5).map(o => renderOrderCard(o)).join('') || '<div class="empty"><p>سفارشی نیست</p></div>';
     attachOrderClicks();
@@ -418,9 +441,11 @@ async function openOrder(oid) {
       const sc = p.status==='paid'?'color:var(--green)':p.status==='failed'?'color:var(--red)':'color:var(--amber)';
       let actions = '';
       if (p.status==='pending') actions = `<div class="btn-row" style="margin-top:8px"><button class="btn btn-success btn-sm" onclick="approvePayment('${p.id}')">✓ تأیید</button><button class="btn btn-danger btn-sm" onclick="rejectPayment('${p.id}')">✕ رد</button></div>`;
+      const rcpt = p.receipt_file_id ? `<div class="detail-row"><span class="key">رسید</span><span class="val"><a href="/api/admin/receipts/${p.id}?initData=${encodeURIComponent(initData)}" target="_blank" style="color:var(--blue)">مشاهده رسید</a></span></div>` : (p.status==='pending' ? `<div class="detail-row"><span class="key">رسید</span><span class="val" style="color:var(--text3)">ارسال نشده</span></div>` : '');
       return `<div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:8px">
         <div class="detail-row"><span class="key">${p.payment_type==='advance'?'پیش‌پرداخت':'نهایی'}</span><span class="val" style="${sc}">${p.amount.toLocaleString('fa-IR')} — ${st}</span></div>
         ${p.ref_id?`<div class="detail-row"><span class="key">کد پیگیری</span><span class="val">${p.ref_id}</span></div>`:''}
+        ${rcpt}
         ${actions}</div>`;
     }).join('')}</div>`;
 
@@ -490,6 +515,7 @@ function renderPaymentCard(p) {
     <div class="detail-row"><span class="key">وضعیت</span><span class="val" style="${sc}">${st}</span></div>
     ${p.ref_id?`<div class="detail-row"><span class="key">کد پیگیری</span><span class="val">${p.ref_id}</span></div>`:''}
     <div class="detail-row"><span class="key">تاریخ</span><span class="val">${new Date(p.created_at).toLocaleDateString('fa-IR')}</span></div>
+    ${p.receipt_file_id?`<div class="detail-row"><span class="key">رسید</span><span class="val"><a href="/api/admin/receipts/${p.id}?initData=${encodeURIComponent(initData)}" target="_blank" style="color:var(--blue)">مشاهده رسید</a></span></div>`:''}
     ${actions}</div>`;
 }
 
@@ -500,6 +526,32 @@ async function approvePayment(pid) {
 }
 async function rejectPayment(pid) {
   try { await API('/api/admin/payments/'+pid+'/reject','PUT'); toast('پرداخت رد شد','error'); loadDashboard(); loadPayments(); } catch(e) { toast(e.message,'error'); }
+}
+
+// ── USERS / BROADCAST ──
+async function loadUsers() {
+  try {
+    const users = await API('/api/admin/users');
+    document.getElementById('userCount').textContent = users.length;
+    const c = document.getElementById('usersList');
+    if (!users.length) { c.innerHTML = '<div class="empty"><div class="icon">○</div><p>کاربری ثبت نشده</p></div>'; return; }
+    c.innerHTML = users.slice().reverse().map(u => `
+      <div class="detail-row">
+        <span class="key">${esc(u.first_name||'')} ${u.username?'@'+u.username:''} <span style="color:var(--text3)">(ID: ${u.id})</span></span>
+        <span class="val" style="font-size:11px;color:var(--text3)">${new Date(u.joined_at).toLocaleDateString('fa-IR')}</span>
+      </div>`).join('');
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function sendBroadcast() {
+  const msg = document.getElementById('broadcastMsg').value.trim();
+  if (!msg) { toast('متن پیام را بنویسید','error'); return; }
+  if (!confirm('ارسال پیام همگانی به همه کاربران؟')) return;
+  try {
+    const r = await API('/api/admin/broadcast','POST',{message: msg});
+    toast(`✅ پیام برای ${r.count} کاربر ارسال شد`,'success');
+    document.getElementById('broadcastMsg').value = '';
+  } catch(e) { toast(e.message,'error'); }
 }
 
 // ── CATEGORIES ──
@@ -587,75 +639,54 @@ async function loadSettings() {
   try {
     settings = await API('/api/admin/settings');
     document.getElementById('settingsForm').innerHTML = `
-      <div class="card"><div class="card-header"><div class="ic">◎</div><h3>تنظیمات عمومی</h3></div>
-        <div class="form-group"><label class="label">درصد پیش‌پرداخت</label><input class="input" type="number" id="setAdvance" value="${settings.advance_percent||50}"></div>
-        <div class="form-group"><label class="label">حداقل پیش‌پرداخت (تومان)</label><input class="input" type="number" id="setMinAdvance" value="${settings.min_advance||100000}"></div>
+      <div class="card"><div class="card-header"><div class="ic">◎</div><h3>پرداخت و سفارش</h3></div>
+        <div class="detail-row" style="align-items:center">
+          <span class="key">دریافت پیش‌پرداخت</span>
+          <span class="val"><span class="toggle ${settings.advance_enabled!==false?'on':''}" onclick="toggleAdvance()" id="advanceToggle"></span></span>
+        </div>
+        <p style="font-size:11px;color:var(--text3);margin:6px 0 14px">اگر خاموش باشد، مشتری کل مبلغ را در یک پرداخت می‌پردازد.</p>
+        <div class="form-group"><label class="label">درصد پیش‌پرداخت (پیش‌فرض)</label><input class="input" type="number" id="setAdvance" value="${settings.advance_percent||50}"></div>
+        <div class="form-group"><label class="label">تعداد سفارش‌های نمایش داده‌شده به مشتری (در ربات)</label><input class="input" type="number" id="setOrderLimit" value="${settings.customer_orders_display_limit||8}"></div>
+        <p style="font-size:11px;color:var(--text3)">قیمت‌ها از صفحه «دسته‌بندی» قابل تغییر هستند.</p>
+      </div>
+      <div class="card"><div class="card-header"><div class="ic">💳</div><h3>اطلاعات کارت (پرداخت دستی)</h3></div>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:14px">این اطلاعات به جای لینک پرداخت به مشتری نمایش داده می‌شود و مشتری رسید واریز را در ربات می‌فرستد.</p>
+        <div class="form-group"><label class="label">شماره کارت</label><input class="input" id="setCard" value="${esc(settings.bank_card_number||'')}" placeholder="6037-..."></div>
+        <div class="form-group"><label class="label">به نام</label><input class="input" id="setCardHolder" value="${esc(settings.bank_card_holder||'')}" placeholder="نام صاحب کارت"></div>
+        <div class="form-group"><label class="label">نام بانک</label><input class="input" id="setBankName" value="${esc(settings.bank_name||'')}"></div>
+        <div class="form-group"><label class="label">توضیحات تکمیلی (اختیاری)</label><input class="input" id="setBankNote" value="${esc(settings.bank_note||'')}" placeholder="مثلاً: مبلغ را دقیق واریز کنید"></div>
+      </div>
+      <div class="card"><div class="card-header"><div class="ic">◎</div><h3>تماس و پشتیبانی</h3></div>
         <div class="form-group"><label class="label">تلفن پشتیبانی</label><input class="input" id="setPhone" value="${esc(settings.support_phone||'')}"></div>
         <div class="form-group"><label class="label">تلگرام پشتیبانی</label><input class="input" id="setTg" value="${esc(settings.support_telegram||'')}" placeholder="username بدون @"></div>
       </div>
       <div class="card"><div class="card-header"><div class="ic">◈</div><h3>باشگاه مشتریان</h3></div>
-        <div class="form-group"><label class="label">پاداش دعوت (تومان)</label><input class="input" type="number" id="setRefReward" value="${settings.referral_reward||50000}"></div>
+        <div class="form-group"><label class="label">پاداش هر دعوت (تومان — به کیف پول معرف واریز می‌شود)</label><input class="input" type="number" id="setRefReward" value="${settings.referral_reward||50000}"></div>
         <div class="form-group"><label class="label">درصد تخفیف برای دعوت‌شونده</label><input class="input" type="number" id="setRefDiscount" value="${settings.referral_discount_percent||10}"></div>
       </div>
-      <div class="card"><div class="card-header"><div class="ic">◎</div><h3>روش‌های پرداخت</h3></div>
-        <div id="paymentMethods"></div>
-        <button class="btn btn-secondary" onclick="addPaymentMethod()" style="margin-top:8px">＋ افزودن روش پرداخت</button>
-      </div>
       <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:12px">ذخیره تنظیمات</button>`;
-    renderPaymentMethods();
   } catch(e) { toast(e.message,'error'); }
 }
 
-function renderPaymentMethods() {
-  const methods = settings.payment_methods || [];
-  document.getElementById('paymentMethods').innerHTML = methods.map((m,i) => `
-    <div class="detail-row" style="align-items:center">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="toggle ${m.active!==false?'on':''}" onclick="togglePM(${i})"></span>
-        <span>${esc(m.name||'')}</span>
-      </div>
-      <button class="btn btn-danger btn-sm" onclick="removePM(${i})">حذف</button>
-    </div>
-    ${m.url&&m.url!=='zarinpal'?`<div class="form-group" style="margin-top:8px"><input class="input" value="${esc(m.url)}" placeholder="لینک پرداخت" onchange="updatePMUrl(${i},this.value)"></div>`:''}
-  `).join('');
-}
-
-function togglePM(i) {
-  const methods = [...(settings.payment_methods||[])];
-  methods[i] = {...methods[i], active: !(methods[i].active !== false)};
-  settings.payment_methods = methods;
-  renderPaymentMethods();
-}
-function removePM(i) {
-  const methods = [...(settings.payment_methods||[])];
-  methods.splice(i,1);
-  settings.payment_methods = methods;
-  renderPaymentMethods();
-}
-function addPaymentMethod() {
-  const name = prompt('نام روش پرداخت:');
-  if (!name) return;
-  const url = prompt('لینک پرداخت (یا zarinpal برای زرین‌پال):','');
-  const methods = [...(settings.payment_methods||[])];
-  methods.push({name, url: url||'', active:true});
-  settings.payment_methods = methods;
-  renderPaymentMethods();
-}
-function updatePMUrl(i, url) {
-  const methods = [...(settings.payment_methods||[])];
-  methods[i] = {...methods[i], url};
-  settings.payment_methods = methods;
+function toggleAdvance() {
+  settings.advance_enabled = !(settings.advance_enabled !== false);
+  document.getElementById('advanceToggle').classList.toggle('on', settings.advance_enabled !== false);
 }
 
 async function saveSettings() {
   const data = {
+    advance_enabled: settings.advance_enabled !== false,
     advance_percent: parseInt(document.getElementById('setAdvance')?.value)||50,
     min_advance: parseInt(document.getElementById('setMinAdvance')?.value)||100000,
+    customer_orders_display_limit: parseInt(document.getElementById('setOrderLimit')?.value)||8,
     support_phone: document.getElementById('setPhone')?.value?.trim()||'',
     support_telegram: document.getElementById('setTg')?.value?.trim()||'',
     referral_reward: parseInt(document.getElementById('setRefReward')?.value)||50000,
     referral_discount_percent: parseInt(document.getElementById('setRefDiscount')?.value)||10,
-    payment_methods: settings.payment_methods,
+    bank_card_number: document.getElementById('setCard')?.value?.trim()||'',
+    bank_card_holder: document.getElementById('setCardHolder')?.value?.trim()||'',
+    bank_name: document.getElementById('setBankName')?.value?.trim()||'',
+    bank_note: document.getElementById('setBankNote')?.value?.trim()||'',
   };
   try { await API('/api/admin/settings','PUT',data); toast('تنظیمات ذخیره شد','success'); } catch(e) { toast(e.message,'error'); }
 }

@@ -279,15 +279,24 @@ body{
 
 <div class="page" id="page-club">
   <div class="card" style="text-align:center">
-    <div style="font-size:12px;color:var(--text3);margin-bottom:4px">کد معرف شما</div>
-    <div style="display:flex;align-items:center;justify-content:center;gap:8px">
-      <code style="font-size:22px;font-weight:700;letter-spacing:2px;background:var(--surface2);padding:8px 16px;border-radius:10px" id="refCode">---</code>
-      <button class="copy-btn" onclick="copyRef()">کپی</button>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:8px">🔗 لینک معرف شما</div>
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap">
+      <code style="font-size:11px;font-weight:600;direction:ltr;background:var(--surface2);padding:8px 12px;border-radius:10px;word-break:break-all;max-width:100%" id="refLink">---</code>
+      <button class="copy-btn" onclick="copyRef()">کپی لینک</button>
     </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px">کد: <code id="refCode">---</code></div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="shareRef()">📤 ارسال لینک برای دوستان</button>
   </div>
   <div class="stats">
     <div class="stat"><div class="num" id="refCount">0</div><div class="lbl">دعوت شده</div></div>
     <div class="stat"><div class="num" id="refEarned">0</div><div class="lbl">پاداش (تومان)</div></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><div class="icon">🎁</div><h3>پاداش شما</h3></div>
+    <div style="font-size:13px;line-height:1.9;color:var(--text2)">
+      🎁 به ازای هر نفری که با لینک شما عضو شود <b id="refReward">---</b> تومان به کیف پول شما اضافه می‌شود.<br>
+      🎫 دعوت‌شونده هم <b id="refDiscount">---</b>٪ تخفیف روی اولین سفارش می‌گیرد.
+    </div>
   </div>
   <div class="card">
     <div class="card-header"><div class="icon">✓</div><h3>اعمال کد معرف</h3></div>
@@ -483,6 +492,7 @@ async function openOrder(oid) {
     const o = await API('/api/customer/orders/'+oid);
     const files = o.files || [];
     const payments = o.payments || [];
+    window.BOT_USERNAME = o.bot_username || window.BOT_USERNAME || '';
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.getElementById('page-order-detail').classList.add('active');
     document.getElementById('pageTitle').textContent = 'سفارش #'+oid;
@@ -506,17 +516,20 @@ async function openOrder(oid) {
 
     if (payments.length) {
       html += `<div class="detail-block"><h3>پرداخت‌ها</h3>${payments.map(p => {
-        const ps = p.status==='paid'?'پرداخت شده':p.status==='failed'?'ناموفق':'در انتظار';
+        const ps = p.status==='paid'?'پرداخت شده':p.status==='failed'?'ناموفق':'در انتظار تأیید';
         const pc = p.status==='paid'?'color:var(--green)':p.status==='failed'?'color:var(--red)':'color:var(--amber)';
         return `<div class="detail-row"><span class="key">${p.payment_type==='advance'?'پیش‌پرداخت':'نهایی'}</span><span class="val" style="${pc}">${p.amount.toLocaleString('fa-IR')} تومان — ${ps}</span></div>`;
       }).join('')}</div>`;
     }
 
-    // Payment button
-    if (o.status === 'pending') {
-      html += `<button class="btn btn-primary" onclick="createPayment('${o.id}','advance')">پرداخت پیش‌پرداخت (${o.advance_amount.toLocaleString('fa-IR')} تومان)</button>`;
-    } else if (o.status === 'completed') {
-      html += `<button class="btn btn-primary" onclick="createPayment('${o.id}','final')">پرداخت نهایی (${o.final_amount.toLocaleString('fa-IR')} تومان)</button>`;
+    // Payment section: manual card transfer
+    const needPay = o.status === 'pending' || o.status === 'completed';
+    if (needPay) {
+      html += `<div class="detail-block"><h3>💳 پرداخت</h3>
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:13px;line-height:2;white-space:pre-wrap" id="payInfo_${o.id}">در حال دریافت اطلاعات پرداخت...</div>
+        <button class="btn btn-primary" style="margin-top:12px" id="payBtn_${o.id}" onclick="startPayment('${o.id}')">💳 مشاهده اطلاعات پرداخت</button>
+        <p style="font-size:11px;color:var(--text3);margin-top:8px">پس از واریز، عکس رسید را در ربات بفرستید تا مدیر تأیید کند.</p>
+      </div>`;
     }
 
     if (!o.referral_discount_applied && (o.status === 'pending')) {
@@ -530,13 +543,26 @@ async function openOrder(oid) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function createPayment(oid, type) {
+async function startPayment(oid) {
   try {
-    const r = await API('/api/customer/payments', 'POST', {order_id: oid, type});
-    if (r.payment_url) {
-      TG.openLink(r.payment_url);
+    const r = await API('/api/customer/payments', 'POST', {order_id: oid});
+    const btn = document.getElementById('payBtn_'+oid);
+    const info = document.getElementById('payInfo_'+oid);
+    info.innerHTML = esc(`مبلغ قابل پرداخت: ${Number(r.amount).toLocaleString('fa-IR')} تومان\n\n` + (r.bank_info || ''));
+    if (btn) {
+      btn.textContent = '🧾 ارسال رسید در ربات';
+      btn.onclick = () => sendReceiptInBot(r.payment_id);
     }
+    toast('💳 اطلاعات پرداخت نمایش داده شد', 'success');
   } catch(e) { toast(e.message, 'error'); }
+}
+
+function sendReceiptInBot(pid) {
+  if (!window.BOT_USERNAME) { toast('نام کاربری ربات هنوز تنظیم نشده', 'error'); return; }
+  const link = 'https://t.me/' + window.BOT_USERNAME + '?start=receipt_' + pid;
+  if (window.Telegram?.WebApp?.openTelegramLink) { window.Telegram.WebApp.openTelegramLink(link); }
+  else if (window.Telegram?.WebApp?.openLink) { window.Telegram.WebApp.openLink(link); }
+  else { window.open(link, '_blank'); }
 }
 
 async function applyRefToOrder(oid) {
@@ -566,17 +592,30 @@ async function loadClub() {
   try {
     const d = await API('/api/customer/wallet');
     const ref = d.referral;
+    window.BOT_USERNAME = d.bot_username || '';
     document.getElementById('refCode').textContent = ref?.code || '---';
+    document.getElementById('refLink').textContent = d.referral_link || '---';
     document.getElementById('refCount').textContent = ref?.invited_count || 0;
     document.getElementById('refEarned').textContent = (ref?.total_earned||0).toLocaleString('fa-IR');
+    document.getElementById('refReward').textContent = (d.settings?.referral_reward||0).toLocaleString('fa-IR');
+    document.getElementById('refDiscount').textContent = d.settings?.referral_discount_percent || 0;
   } catch(e) { toast(e.message, 'error'); }
 }
 
 function copyRef() {
-  const code = document.getElementById('refCode').textContent;
-  if (code && code !== '---') {
-    navigator.clipboard.writeText(code).then(() => toast('کپی شد!', 'success')).catch(() => toast('خطا در کپی', 'error'));
+  const link = document.getElementById('refLink').textContent;
+  if (link && link !== '---') {
+    navigator.clipboard.writeText(link).then(() => toast('لینک کپی شد!', 'success')).catch(() => toast('خطا در کپی', 'error'));
   }
+}
+
+function shareRef() {
+  const link = document.getElementById('refLink').textContent;
+  if (!link || link === '---') { toast('لینک معرف موجود نیست', 'error'); return; }
+  const text = encodeURIComponent('سلام! 👋 با این لینک از باشگاه مشتریان استفاده کن و روی اولین سفارش تخفیف بگیر: ' + link);
+  const shareUrl = 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + text;
+  if (window.Telegram?.WebApp?.openTelegramLink) { window.Telegram.WebApp.openTelegramLink(shareUrl); }
+  else { window.open(shareUrl, '_blank'); }
 }
 
 async function applyRef() {

@@ -13,9 +13,5 @@ services:
         sync: false
       - key: WEBAPP_PORT
         value: "10000"
-      - key: ZARINPAL_MERCHANT_ID
-        sync: false
-      - key: ZARINPAL_SANDBOX
-        value: "true"
       - key: BOT_USERNAME
         sync: false
