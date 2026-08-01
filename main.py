@@ -36,14 +36,15 @@ def _default_db():
     return {
         "categories": [], "orders": [], "files": [], "payments": [],
         "wallets": [], "referrals": [], "users": [], "broadcasts": [],
-        "extra_admins": [], "support_messages": [],
+        "extra_admins": [], "support_messages": [], "used_rewards": {},
         "settings": {
             "advance_percent": 50, "min_advance": 100000, "currency": "تومان",
             "advance_enabled": True, "customer_orders_display_limit": 8,
             "support_phone": "", "support_telegram": "",
             "support_mode": "bot",
             "support_text": "برای ارتباط با پشتیبانی از روش‌های زیر استفاده کنید:",
-            "referral_discount_percent": 10, "referral_reward": 50000,
+            "referral_discount_percent": 10, "referral_reward": 50000, "referral_referee_reward": 50000,
+            "reward_code": "", "reward_amount": 50000,
             "bank_card_number": "", "bank_card_holder": "", "bank_name": "", "bank_note": "",
         },
         "notifications": {
@@ -77,6 +78,17 @@ def _save(d):
 _uid = lambda: str(uuid.uuid4())[:10]
 _now = lambda: datetime.now().isoformat()
 
+async def safe_edit(q, text=None, reply_markup=None, caption=None):
+    try:
+        if caption is not None:
+            await q.edit_message_caption(caption=caption, reply_markup=reply_markup)
+        else:
+            await q.edit_message_text(text=text, reply_markup=reply_markup)
+    except Exception as e:
+        if "not modified" not in str(e).lower() and "message to edit not found" not in str(e).lower():
+            raise
+
+
 # ═══════════════ CRUD: ادمین‌ها ═══════════════
 def is_admin(uid_):
     db = _db()
@@ -97,12 +109,13 @@ def get_all_admin_ids():
     return list(res)
 
 # ═══════════════ CRUD: پیام‌های پشتیبانی ═══════════════
-def supmsg_create(user_id, username, first_name, text):
+def supmsg_create(user_id, username, first_name, text, order_id=None):
     db = _db()
     sm = {
         "id": _uid(), "user_id": int(user_id), "username": username or "",
-        "first_name": first_name or "", "text": text, "created_at": _now(),
-        "status": "pending", "admin_reply": "", "replied_at": "", "replied_by": None
+        "first_name": first_name or "", "text": text, "order_id": order_id,
+        "created_at": _now(), "status": "pending", "admin_reply": "",
+        "replied_at": "", "replied_by": None
     }
     db.setdefault("support_messages", []).append(sm)
     _save(db)
@@ -235,10 +248,11 @@ def order_update(oid, **kw):
     return None
 
 # ═══════════════ CRUD: فایل ═══════════════
-def file_add(oid, fn, fp, tgid):
+def file_add(oid, fn, tgid, chat_id=None, message_id=None):
     db = _db()
-    f = {"id": _uid(), "order_id": oid, "filename": fn, "file_path": fp, "telegram_file_id": tgid, "uploaded_at": _now()}
-    db["files"].append(f); _save(db); return f
+    f = {"id": _uid(), "order_id": oid, "filename": fn, "telegram_file_id": tgid,
+         "chat_id": chat_id, "message_id": message_id, "uploaded_at": _now()}
+    db.setdefault("files", []).append(f); _save(db); return f
 
 file_get = lambda oid: [f for f in _db()["files"] if f["order_id"] == oid]
 
@@ -341,13 +355,30 @@ def ref_record_invite(ref_uid, inv_uid):
             r["total_earned"] = r.get("total_earned", 0) + reward
             w = None
             for ww in db["wallets"]:
-                if ww["user_id"] == ref_uid: w = ww; break
+                try:
+                    if int(ww["user_id"]) == int(ref_uid): w = ww; break
+                except:
+                    if ww["user_id"] == ref_uid: w = ww; break
             if w is None:
                 w = {"id": _uid(), "user_id": ref_uid, "balance": 0, "transactions": [], "created_at": _now()}
                 db["wallets"].append(w)
             w["balance"] += reward
-            w["transactions"].append({"type": "credit", "amount": reward,
-                                      "description": f"پاداش دعوت کاربر {inv_uid}", "date": _now()})
+            w.setdefault("transactions", []).append({"type": "credit", "amount": reward,
+                                                     "description": f"پاداش دعوت کاربر {inv_uid}", "date": _now()})
+
+            referee_reward = db["settings"].get("referral_referee_reward", 50000)
+            w_inv = None
+            for ww in db["wallets"]:
+                try:
+                    if int(ww["user_id"]) == int(inv_uid): w_inv = ww; break
+                except:
+                    if ww["user_id"] == inv_uid: w_inv = ww; break
+            if w_inv is None:
+                w_inv = {"id": _uid(), "user_id": inv_uid, "balance": 0, "transactions": [], "created_at": _now()}
+                db["wallets"].append(w_inv)
+            w_inv["balance"] += referee_reward
+            w_inv.setdefault("transactions", []).append({"type": "credit", "amount": referee_reward,
+                                                         "description": "پاداش ورود از طریق لینک دعوت", "date": _now()})
             _save(db); return r
     return None
 
@@ -452,6 +483,11 @@ def admin_menu_kb():
 # ── /start ──
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
+    try:
+        from telegram import MenuButtonCommands
+        await ctx.bot.set_chat_menu_button(chat_id=u.id, menu_button=MenuButtonCommands())
+    except Exception:
+        pass
     user_sessions.pop(u.id, None)
     user_register(u.id, u.username or "", u.first_name or "")
     wallet_ensure(u.id)
@@ -501,6 +537,11 @@ async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
+    try:
+        from telegram import MenuButtonCommands
+        await ctx.bot.set_chat_menu_button(chat_id=u.id, menu_button=MenuButtonCommands())
+    except Exception:
+        pass
     if not is_admin(u.id):
         await update.message.reply_text("⛔️ دسترسی محدود.")
         return
@@ -536,6 +577,10 @@ async def handle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await wal_enter_amt_handler(update, ctx)
     if s.get("state") == "support_chat":
         return await support_chat_handler(update, ctx)
+    if s.get("state") == "order_support_chat":
+        return await order_support_chat_handler(update, ctx)
+    if s.get("state") == "wal_enter_reward_code":
+        return await wal_enter_reward_code_handler(update, ctx)
 
     handlers = {
         "📋 ثبت سفارش جدید": order_start, "📂 سفارش‌های من": my_orders,
@@ -602,18 +647,20 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         p = pay_get(pid) if pid else None
         o = order_get(p["order_id"]) if p and p["payment_type"] != "topup" else None
         p_uid = p.get("user_id", p["order_id"]) if p else None
-        if not p or (p["payment_type"] != "topup" and not o) or p_uid != u.id:
+        try:
+            p_uid_match = (int(p_uid) == int(u.id))
+        except Exception:
+            p_uid_match = (p_uid == u.id)
+        if not p or (p["payment_type"] != "topup" and not o) or not p_uid_match:
             user_sessions.pop(u.id, None)
             await msg.reply_text("⚠️ درخواست پرداخت معتبری یافت نشد. دوباره تلاش کنید.")
             return
-        try:
-            sp = UPLOAD_FOLDER / f"rcpt_{_uid()}_{fname}"
-            await tf.download_to_drive(sp)
-        except Exception:
-            sp = None
-        pay_update(pid, receipt_file_id=file.file_id, receipt_path=str(sp) if sp else None, receipt_sent_at=_now())
+        pay_update(pid, receipt_file_id=file.file_id, receipt_path=None, receipt_sent_at=_now())
         user_sessions.pop(u.id, None)
-        await msg.reply_text("✅ رسید شما دریافت شد و برای مدیر ارسال شد.\nپس از تأیید، به شما اطلاع داده می‌شود.")
+        await msg.reply_text(
+            "✅ درخواست شما ثبت شد برای ارسال رسید پرداخت\nلطفا منتظر تایید ادمین بمونین",
+            reply_markup=main_kb(u.id)
+        )
         for aid in get_all_admin_ids():
             try:
                 kb = InlineKeyboardMarkup([[btn("✅ تأیید", f"payappr_{pid}"), btn("❌ رد", f"payrej_{pid}")]])
@@ -632,16 +679,41 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except: pass
         return
 
+    # ── فایل‌های گفتگو با پشتیبانی ──
+    if s.get("state") in ("support_chat", "order_support_chat"):
+        oid = s.get("order_id")
+        o = order_get(oid) if oid else None
+        user_sessions.pop(u.id, None)
+        cap = msg.caption or "فایل/رسانه ارسال‌شده"
+        sm = supmsg_create(u.id, u.username, u.first_name, f"[رسانه] {cap}", order_id=oid)
+        await msg.reply_text("✅ پیام شما برای پشتیبانی ارسال شد. به زودی پاسخ را دریافت خواهید کرد.", reply_markup=main_kb(u.id))
+        for aid in get_all_admin_ids():
+            try:
+                kb_rows = []
+                if oid:
+                    kb_rows.append([btn(f"📦 مشاهده سفارش #{oid}", f"o_{oid}")])
+                kb_rows.append([btn("✍️ پاسخ به کاربر", f"supr_{sm['id']}")])
+                txt_info = (
+                    f"💬 رسانه جدید پشتیبانی #{sm['id']}\n"
+                    f"👤 از: {esc(u.first_name or str(u.id))} (@{u.username or '---'}) (ID: {u.id})\n"
+                    f"📝 توضیحات: {cap}"
+                )
+                await ctx.bot.forward_message(chat_id=aid, from_chat_id=msg.chat_id, message_id=msg.message_id)
+                await ctx.bot.send_message(aid, txt_info, reply_markup=InlineKeyboardMarkup(kb_rows))
+            except Exception:
+                pass
+        return
+
     # ── فایل مدارک سفارش ──
     try:
-        sp = UPLOAD_FOLDER / f"{_uid()}_{fname}"
-        await tf.download_to_drive(sp)
-        oo = order_all(uid_=u.id)
-        if not oo: await msg.reply_text("⚠️ اول سفارش ثبت کن."); return
-        file_add(oo[0]["id"], fname, str(sp), file.file_id)
-        await msg.reply_text(f"✅ «{esc(fname)}» آپلود شد.\nفایل بعدی یا «اتمام».")
+        oo = [o for o in order_all(uid_=u.id) if o["status"] in ("pending", "in_progress")]
+        if not oo:
+            oo = order_all(uid_=u.id)
+        if not oo: await msg.reply_text("⚠️ اول سفارش ثبت کن.", reply_markup=main_kb(u.id)); return
+        file_add(oo[0]["id"], fname, file.file_id, chat_id=msg.chat_id, message_id=msg.message_id)
+        await msg.reply_text(f"✅ «{esc(fname)}» آپلود شد.\nفایل بعدی یا «اتمام».", reply_markup=main_kb(u.id))
     except Exception as e:
-        await msg.reply_text("⚠️ خطا در آپلود.")
+        await msg.reply_text("⚠️ خطا در آپلود.", reply_markup=main_kb(u.id))
 
 async def finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); u = q.from_user
@@ -679,11 +751,15 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(txt, reply_markup=kb)
 
 def cust_order_text(o):
-    lines = [f"📦 سفارش #{o['id']} — {STATUS_LABELS.get(o['status'], o['status'])}", "",
-             f"🗂 {o['category_name']}",
-             f"💰 قیمت: {o['price']:,} تومان",
-             f"💳 پیش‌پرداخت: {o['advance_amount']:,} تومان",
-             f"💵 پرداخت نهایی: {o['final_amount']:,} تومان"]
+    lines = [
+        f"📦 سفارش #{o['id']}",
+        f"📌 وضعیت فعلی: {STATUS_LABELS.get(o['status'], o['status'])}",
+        "",
+        f"🗂 {o['category_name']}",
+        f"💰 قیمت: {o['price']:,} تومان",
+        f"💳 پیش‌پرداخت: {o['advance_amount']:,} تومان",
+        f"💵 پرداخت نهایی: {o['final_amount']:,} تومان"
+    ]
     if o.get("discount"): lines.append(f"🎁 تخفیف: {o['discount']:,} تومان")
     if o.get("description"): lines += ["", f"📝 {o['description']}"]
     fs = file_get(o["id"]); ps = pay_by_order(o["id"])
@@ -708,6 +784,7 @@ async def cust_order_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = []
     if o["status"] in ("pending", "completed"):
         rows.append([btn("💳 اطلاعات پرداخت", f"payinfo_{oid}")])
+    rows.append([btn("📞 ارتباط با پشتیبانی سفارش", f"cosup_{oid}")])
     rows.append([btn("↩️ بازگشت به لیست", "co_list")])
     await q.edit_message_text(cust_order_text(o), reply_markup=InlineKeyboardMarkup(rows))
 
@@ -747,7 +824,7 @@ async def wallet_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sign, color = ("+", "🟢") if t["type"] == "credit" else ("-", "🔴")
         txt += f"{color} {sign}{t['amount']:,} — {t.get('description', '')}\n"
     if not w.get("transactions"): txt += "تراکنشی ثبت نشده است."
-    kb = InlineKeyboardMarkup([[btn("➕ افزایش موجودی", "wal_topup")]])
+    kb = InlineKeyboardMarkup([[btn("➕ افزایش موجودی", "wal_topup"), btn("🎁 ثبت کد هدیه/جایزه", "wal_rewardcode")]])
     await update.message.reply_text(txt, reply_markup=kb)
 
 async def support_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -795,6 +872,59 @@ async def support_chat_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await ctx.bot.send_message(aid, txt, reply_markup=kb)
         except: pass
 
+async def order_support_chat_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    s = user_sessions.pop(u.id, {})
+    t = update.message.text
+    oid = s.get("order_id")
+    o = order_get(oid) if oid else None
+    sm = supmsg_create(u.id, u.username, u.first_name, f"[سفارش #{oid}] {t}", order_id=oid)
+    await update.message.reply_text(
+        "✅ پیام شما در رابطه با سفارش برای پشتیبانی ارسال شد. به زودی پاسخ را دریافت خواهید کرد.",
+        reply_markup=main_kb(u.id)
+    )
+    for aid in get_all_admin_ids():
+        try:
+            kb_rows = [
+                [btn(f"📦 مشاهده سفارش #{oid}", f"o_{oid}")],
+                [btn("✍️ پاسخ به کاربر", f"supr_{sm['id']}")]
+            ]
+            txt = (
+                f"💬 پیام پشتیبانی سفارش #{oid}\n"
+                f"👤 کاربر: {esc(u.first_name or str(u.id))} (@{u.username or '---'}) (ID: {u.id})\n"
+                f"📌 پروژه: {o['category_name'] if o else '---'} | وضعیت: {STATUS_LABELS.get(o['status'], o['status']) if o else '---'}\n"
+                f"💰 قیمت: {o['price'] if o else 0:,} تومان\n"
+                f"📝 توضیحات سفارش:\n{o.get('description', '—') if o else '—'}\n\n"
+                f"💬 متن پیام کاربر:\n{t}"
+            )
+            await ctx.bot.send_message(aid, txt, reply_markup=InlineKeyboardMarkup(kb_rows))
+        except Exception:
+            pass
+
+async def wal_enter_reward_code_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    s = user_sessions.pop(u.id, {})
+    t = (update.message.text or "").strip().lower()
+    st = settings_get()
+    valid_code = (st.get("reward_code") or "").strip().lower()
+    reward_amt = st.get("reward_amount", 50000)
+    if not valid_code or t != valid_code:
+        await update.message.reply_text("❌ کد جایزه واردشده نامعتبر است یا غیرفعال شده است.", reply_markup=main_kb(u.id))
+        return
+    db = _db()
+    used = db.setdefault("used_rewards", {}).setdefault(valid_code, [])
+    if u.id in used or str(u.id) in used:
+        await update.message.reply_text("⚠️ شما قبلاً از این کد جایزه استفاده کرده‌اید.", reply_markup=main_kb(u.id))
+        return
+    used.append(u.id)
+    _save(db)
+    wallet_credit(u.id, reward_amt, f"هدیه استفاده از کد جایزه {valid_code}")
+    await update.message.reply_text(
+        f"🎉 تبریک! کد جایزه تأیید شد و مبلغ {reward_amt:,} تومان به کیف پول شما اضافه شد.",
+        reply_markup=main_kb(u.id)
+    )
+
+
 # ── ارسال رسید (دکمه کیبورد) ──
 async def receipt_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
@@ -838,26 +968,47 @@ async def receipt_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer("⛔️ فقط مدیر می‌تواند تأیید کند", show_alert=True); return
     pid = q.data.split("_", 1)[1]
     p = pay_get(pid)
-    if not p: await q.edit_message_text("پرداخت یافت نشد."); return
-    o = order_get(p["order_id"])
+    if not p:
+        try: await q.edit_message_caption("پرداخت یافت نشد.")
+        except Exception: await q.edit_message_text("پرداخت یافت نشد.")
+        return
+    o = order_get(p["order_id"]) if p["payment_type"] != "topup" else None
+    target_uid = p.get("user_id", p["order_id"])
     if q.data.startswith("payappr_"):
         pay_update(pid, admin_approved=True, status="paid", approved_at=_now(), approved_by=q.from_user.id)
-        if o:
+        if p["payment_type"] == "topup":
+            wallet_credit(target_uid, p["amount"], "افزایش موجودی توسط مدیریت (تأیید رسید)")
+            _notify_user(target_uid, f"✅ رسید افزایش موجودی کیف پول به مبلغ {p['amount']:,} تومان تأیید و به حساب شما اضافه شد.")
+        elif o:
             if p["payment_type"] == "advance":
                 order_update(o["id"], status="paid_advance")
             elif o["status"] == "completed":
                 order_update(o["id"], status="paid_final")
             else:
                 order_update(o["id"], status="paid_advance")
-            _notify_user(o["user_id"], f"✅ رسید پرداخت {p['amount']:,} تومان برای سفارش #{o['id']} تأیید شد. متشکریم!")
-        try: await q.edit_message_caption("✅ پرداخت تأیید شد.")
-        except Exception: await q.edit_message_text("✅ پرداخت تأیید شد.")
+            desc_str = f"\n📝 توضیحات: {o['description']}" if o.get('description') else ""
+            _notify_user(o["user_id"],
+                f"✅ رسید پرداخت {p['amount']:,} تومان برای سفارش #{o['id']} تأیید شد. متشکریم!\n"
+                f"📌 پروژه: {o['category_name']}{desc_str}"
+            )
+        cap_text = f"✅ پرداخت تأیید شد.\n👤 آیدی کاربر: {target_uid}"
+        kb = InlineKeyboardMarkup([
+            [btn(f"💰 مشاهده کیف پول ({target_uid})", f"adm_wal_u_{target_uid}")],
+            [btn("↩️ لیست پرداخت‌ها", "adm_pays")]
+        ])
+        await safe_edit(q, caption=cap_text, reply_markup=kb)
     else:
         pay_update(pid, admin_approved=False, status="failed")
-        if o:
+        if p["payment_type"] == "topup":
+            _notify_user(target_uid, f"❌ رسید افزایش موجودی کیف پول به مبلغ {p['amount']:,} تومان رد شد.")
+        elif o:
             _notify_user(o["user_id"], f"❌ رسید پرداخت سفارش #{o['id']} رد شد. لطفاً با پشتیبانی تماس بگیرید.")
-        try: await q.edit_message_caption("❌ پرداخت رد شد.")
-        except Exception: await q.edit_message_text("❌ پرداخت رد شد.")
+        cap_text = f"❌ پرداخت رد شد.\n👤 آیدی کاربر: {target_uid}"
+        kb = InlineKeyboardMarkup([
+            [btn(f"💰 مشاهده کیف پول ({target_uid})", f"adm_wal_u_{target_uid}")],
+            [btn("↩️ لیست پرداخت‌ها", "adm_pays")]
+        ])
+        await safe_edit(q, caption=cap_text, reply_markup=kb)
 
 # ═══════════════ ADMIN: منوها ═══════════════
 def admin_stats_text():
@@ -873,19 +1024,103 @@ def admin_stats_text():
             f"🧾 رسید در انتظار تأیید: {d['pending_receipts']}\n"
             f"🗂 دسته‌بندی فعال: {d['categories']}")
 
-def admin_orders_view(flt="all"):
-    oo = order_all(status=None if flt == "all" else flt)
-    shown = oo[:8]
-    if not shown:
-        txt = f"📦 سفارش‌ها ({len(oo)} مورد)\n\nچیزی نیست."
+def admin_stats_kb():
+    return InlineKeyboardMarkup([
+        [btn("👥 لیست کاربران (سفارش‌ها و کیف پول)", "adm_stats_users")],
+        [btn("📦 کل سفارش‌ها", "adm_orders")],
+        [btn("💰 لاگ درآمدها و واریزی‌ها", "adm_stats_income")],
+        [btn("↩️ منوی مدیریت", "adm_menu")]
+    ])
+
+def admin_stats_users_view():
+    us = sorted(user_all(), key=lambda x: x.get("joined_at", ""), reverse=True)
+    lines = ["👥 لیست کاربران (آمار سفارشات و موجودی کیف پول)", ""]
+    rows = []
+    for uu in us[:10]:
+        w = wallet_ensure(uu['id'])
+        user_orders = order_all(uid_=uu['id'])
+        lines.append(
+            f"• 👤 {uu.get('first_name') or '—'} (@{uu.get('username') or '—'}) (ID: {uu['id']})\n"
+            f"   📦 سفارش‌ها: {len(user_orders)} مورد | 💰 موجودی کیف پول: {w['balance']:,} تومان"
+        )
+        rows.append([btn(f"👤 بررسی {uu.get('first_name') or uu['id']} ({uu['id']})", f"adm_user_detail_{uu['id']}")])
+    if not us:
+        lines.append("کاربری ثبت نشده.")
+    rows.append([btn("↩️ آمار کلی", "adm_stats"), btn("↩️ منوی مدیریت", "adm_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_user_detail_view(uid):
+    uu = user_get(uid)
+    w = wallet_ensure(uid)
+    user_orders = order_all(uid_=uid)
+    lines = [
+        f"👤 بررسی کاربر",
+        f"نام: {uu['first_name'] if uu else '—'} (@{uu['username'] if uu else '—'}) (ID: {uid})",
+        f"💰 موجودی کیف پول: {w['balance']:,} تومان",
+        f"📦 تعداد سفارش‌ها: {len(user_orders)} مورد",
+        ""
+    ]
+    if user_orders:
+        lines.append("📋 آخرین سفارش‌ها:")
+        for o in user_orders[:5]:
+            lines.append(f"  • #{o['id']} - {o['category_name']} ({STATUS_LABELS.get(o['status'], o['status'])}) - {o['price']:,} تومان")
     else:
-        lines = [f"📦 سفارش‌ها ({len(oo)} مورد)", ""]
+        lines.append("سفارشی ثبت نکرده است.")
+    rows = []
+    for o in user_orders[:5]:
+        rows.append([btn(f"📦 مشاهده سفارش #{o['id']} ({o['category_name']})", f"o_{o['id']}")])
+    rows.append([
+        btn("💰 مدیریت کیف پول", f"adm_wal_u_{uid}"),
+        btn("📦 همه سفارش‌های کاربر", f"of_u_{uid}")
+    ])
+    rows.append([btn("↩️ لیست کاربران", "adm_stats_users"), btn("↩️ آمار کلی", "adm_stats")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_stats_income_view():
+    pp = sorted(_db()["payments"], key=lambda x: x.get("approved_at") or x["created_at"], reverse=True)
+    paid_payments = [p for p in pp if p["status"] in ("paid", "completed") or p.get("admin_approved") is True]
+    lines = [f"💰 لاگ درآمدها و واریزی‌ها (کل: {len(paid_payments)} مورد)", ""]
+    rows = []
+    for p in paid_payments[:12]:
+        dt = (p.get("approved_at") or p["created_at"])[:10]
+        uid = p.get("user_id") or p.get("order_id")
+        amt = p["amount"]
+        pt_label = {"advance": "پیش‌پرداخت", "final": "تسویه نهایی", "topup": "شارژ کیف پول"}.get(p["payment_type"], p["payment_type"])
+        lines.append(
+            f"• 📅 {dt} | 💰 {amt:,} تومان ({pt_label})\n"
+            f"   👤 مشتری ID: {uid} | 🔗 سفارش #{p['order_id']}"
+        )
+        if p["payment_type"] != "topup":
+            rows.append([btn(f"🔗 مشاهده سفارش #{p['order_id']} ({amt:,} تومان)", f"o_{p['order_id']}")])
+    if not paid_payments:
+        lines.append("هیچ واریزی تأییدشده‌ای ثبت نشده است.")
+    rows.append([btn("↩️ آمار کلی", "adm_stats"), btn("↩️ منوی مدیریت", "adm_menu")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_orders_view(flt="all", uid_filter=None):
+    oo = order_all(status=None if flt == "all" else flt, uid_=uid_filter)
+    shown = oo[:8]
+    title = f"📦 سفارش‌ها ({len(oo)} مورد)"
+    if uid_filter:
+        title += f" — کاربر ID: {uid_filter}"
+    if not shown:
+        txt = f"{title}\n\nچیزی نیست."
+    else:
+        lines = [title, ""]
         for o in shown:
-            lines.append(f"▸ #{o['id']} — {o['category_name']} | {STATUS_LABELS.get(o['status'], o['status'])} | {o['price']:,} تومان")
+            lines.append(f"▸ #{o['id']} — {o['category_name']} | {STATUS_LABELS.get(o['status'], o['status'])} | {o['price']:,} تومان | 👤 ID: {o['user_id']}")
         txt = "\n".join(lines)
     rows = [[btn("همه", "of_all"), btn("در انتظار", "of_pending"), btn("پیش‌پرداخت", "of_paid_advance"),
              btn("در حال انجام", "of_in_progress"), btn("تکمیل", "of_completed"), btn("لغو", "of_cancelled")]]
-    rows += [[btn(f"#{o['id']} — {o['category_name']}", f"o_{o['id']}")] for o in shown]
+    rows += [[btn(f"#{o['id']} — {o['category_name']} (کاربر {o['user_id']})", f"o_{o['id']}")] for o in shown]
+    uids = []
+    for o in order_all():
+        if o["user_id"] not in uids: uids.append(o["user_id"])
+    if uids:
+        user_row = [btn(f"👤 کاربر {u_id}", f"of_u_{u_id}") for u_id in uids[:4]]
+        rows.append(user_row)
+    if uid_filter:
+        rows.append([btn("↩️ نمایش همه کاربران", "of_all")])
     rows.append([btn("↩️ منوی مدیریت", "adm_menu")])
     return txt, InlineKeyboardMarkup(rows)
 
@@ -929,12 +1164,45 @@ def admin_pays_view():
         lines.append(f"▸ #{p['order_id']} | {pt_label} | {p['amount']:,} تومان | {PAY_LABEL.get(p['status'], p['status'])}")
     if not shown: lines.append("پرداختی نیست.")
     rows = []
-    for p in pending[:5]:
-        row = [btn("✓ تأیید", f"payappr_{p['id']}"), btn("✗ رد", f"payrej_{p['id']}")]
-        if p.get("receipt_file_id"): row.append(btn("🧾 رسید", f"r_{p['id']}"))
-        rows.append(row)
+    for p in pending[:6]:
+        pt_label = {"advance": "پیش", "final": "نهایی", "topup": "شارژ"}.get(p["payment_type"], p["payment_type"])
+        rows.append([
+            btn(f"💳 بررسی پرداخت #{p['order_id']} ({pt_label} - {p['amount']:,} تومان)", f"payview_{p['id']}")
+        ])
     rows.append([btn("↩️ منوی مدیریت", "adm_menu")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+def admin_pay_detail_view(pid):
+    p = pay_get(pid)
+    if not p:
+        return "⚠️ پرداخت یافت نشد.", InlineKeyboardMarkup([[btn("↩️ پرداخت‌ها", "adm_pays")]])
+    o = order_get(p["order_id"]) if p["payment_type"] != "topup" else None
+    target_uid = p.get("user_id", p["order_id"])
+    pt_label = {"advance": "پیش‌پرداخت", "final": "پرداخت نهایی", "topup": "شارژ کیف پول"}.get(p["payment_type"], p["payment_type"])
+    lines = [
+        f"💳 بررسی پرداخت",
+        f"شماره تراکنش / سفارش: #{p['order_id']}",
+        f"نوع پرداخت: {pt_label}",
+        f"مبلغ: {p['amount']:,} تومان",
+        f"👤 آیدی مشتری: {target_uid}",
+        f"وضعیت: {PAY_LABEL.get(p['status'], p['status'])}",
+        f"تاریخ ثبت: {p['created_at'][:16]}"
+    ]
+    if o:
+        lines.append(f"📌 پروژه: {o['category_name']}")
+        if o.get("description"):
+            lines.append(f"📝 توضیح سفارش: {o['description']}")
+    rows = []
+    if p["status"] == "pending":
+        rows.append([btn("✅ تأیید پرداخت", f"payappr_{p['id']}"), btn("❌ رد پرداخت", f"payrej_{p['id']}")])
+    if p.get("receipt_file_id"):
+        rows.append([btn("📸 مشاهده عکس رسید", f"r_{p['id']}")])
+    rows.append([
+        btn(f"💰 کیف پول مشتری ({target_uid})", f"adm_wal_u_{target_uid}"),
+        btn("↩️ لیست پرداخت‌ها", "adm_pays")
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
 
 def admin_cats_view():
     cats = cat_all(False)
@@ -971,8 +1239,10 @@ def admin_settings_view():
         f"👤 نام صاحب کارت: {s.get('bank_card_holder') or '—'}",
         f"🏦 بانک: {s.get('bank_name') or '—'}",
         f"📝 توضیح پرداخت: {s.get('bank_note') or '—'}",
-        f"🎁 پاداش هر دعوت: {s.get('referral_reward', 50000):,} تومان",
+        f"🎁 پاداش دعوت‌کننده: {s.get('referral_reward', 50000):,} تومان",
+        f"🎁 پاداش دعوت‌شونده (شارژ کیف پول): {s.get('referral_referee_reward', 50000):,} تومان",
         f"🎫 تخفیف دعوت‌شونده: {s.get('referral_discount_percent', 10)}٪",
+        f"🎁 کد هدیه/جایزه: {s.get('reward_code') or '— (غیرفعال)'} ({s.get('reward_amount', 50000):,} تومان)",
         f"📱 پشتیبانی: {s.get('support_phone') or '—'} / @{s.get('support_telegram') or '—'}",
         f"💬 روش پشتیبانی: {mode_label}",
         f"📝 متن پشتیبانی: {s.get('support_text') or '—'}",
@@ -980,7 +1250,8 @@ def admin_settings_view():
     rows = [
         [btn("💳 روشن/خاموش پیش‌پرداخت", "sa_adv"), btn("درصد پیش", "se_advpct"), btn("تعداد نمایش", "se_limit")],
         [btn("شماره کارت", "se_card"), btn("نام صاحب", "se_holder"), btn("بانک", "se_bank")],
-        [btn("توضیح پرداخت", "se_note"), btn("پاداش دعوت", "se_reward"), btn("تخفیف", "se_refdisc")],
+        [btn("توضیح پرداخت", "se_note"), btn("پاداش دعوت‌کننده", "se_reward"), btn("پاداش دعوت‌شونده", "se_refereereward")],
+        [btn("🔑 تنظیم کد جایزه", "se_rewardcode"), btn("💰 مبلغ کد جایزه", "se_rewardamt")],
         [btn("تلفن", "se_phone"), btn("تلگرام", "se_tg")],
         [btn("🔄 روش پشتیبانی", "sa_supmode"), btn("📝 متن پشتیبانی", "se_suptext")],
         [btn("↩️ منوی مدیریت", "adm_menu")],
@@ -1103,8 +1374,9 @@ SETTING_STATE_KEY = {
     "set_card": "bank_card_number", "set_holder": "bank_card_holder", "set_bank": "bank_name",
     "set_note": "bank_note", "set_reward": "referral_reward", "set_refdisc": "referral_discount_percent",
     "set_phone": "support_phone", "set_tg": "support_telegram", "set_suptext": "support_text",
+    "set_refereereward": "referral_referee_reward", "set_rewardcode": "reward_code", "set_rewardamt": "reward_amount",
 }
-SETTING_NUMERIC = {"set_advpct", "set_limit", "set_reward", "set_refdisc"}
+SETTING_NUMERIC = {"set_advpct", "set_limit", "set_reward", "set_refdisc", "set_refereereward", "set_rewardamt"}
 
 async def admin_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
@@ -1293,13 +1565,31 @@ async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if d == "adm_stats":
         await q.answer()
-        await q.edit_message_text(admin_stats_text(), reply_markup=InlineKeyboardMarkup([[btn("↩️ منوی مدیریت", "adm_menu")]])); return
+        await safe_edit(q, text=admin_stats_text(), reply_markup=admin_stats_kb()); return
+    if d == "adm_stats_users":
+        await q.answer(); txt, kb = admin_stats_users_view(); await safe_edit(q, text=txt, reply_markup=kb); return
+    if d.startswith("adm_user_detail_"):
+        await q.answer(); uid = d.replace("adm_user_detail_", ""); txt, kb = admin_user_detail_view(uid); await safe_edit(q, text=txt, reply_markup=kb); return
+    if d == "adm_stats_income":
+        await q.answer(); txt, kb = admin_stats_income_view(); await safe_edit(q, text=txt, reply_markup=kb); return
     if d == "adm_orders":
-        await q.answer(); txt, kb = admin_orders_view("all"); await q.edit_message_text(txt, reply_markup=kb); return
+        await q.answer(); txt, kb = admin_orders_view("all"); await safe_edit(q, text=txt, reply_markup=kb); return
     if d.startswith("of_"):
-        await q.answer(); txt, kb = admin_orders_view(d[3:]); await q.edit_message_text(txt, reply_markup=kb); return
+        await q.answer()
+        try:
+            if d.startswith("of_u_"):
+                uid_filter = d.replace("of_u_", "")
+                txt, kb = admin_orders_view("all", uid_filter=uid_filter)
+            else:
+                txt, kb = admin_orders_view(d[3:], uid_filter=None)
+            await safe_edit(q, text=txt, reply_markup=kb)
+        except Exception:
+            pass
+        return
     if d == "adm_pays":
-        await q.answer(); txt, kb = admin_pays_view(); await q.edit_message_text(txt, reply_markup=kb); return
+        await q.answer(); txt, kb = admin_pays_view(); await safe_edit(q, text=txt, reply_markup=kb); return
+    if d.startswith("payview_"):
+        await q.answer(); pid = d.replace("payview_", ""); txt, kb = admin_pay_detail_view(pid); await safe_edit(q, text=txt, reply_markup=kb); return
     if d == "adm_cats":
         await q.answer(); txt, kb = admin_cats_view(); await q.edit_message_text(txt, reply_markup=kb); return
     if d == "adm_set":
@@ -1432,6 +1722,9 @@ async def admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "se_phone": ("set_phone", "تلفن پشتیبانی را بفرستید (یا «-»):"),
             "se_tg": ("set_tg", "تلگرام پشتیبانی بدون @ را بفرستید (یا «-»):"),
             "se_suptext": ("set_suptext", "📝 متن پشتیبانی (نمایش به مشتری) را بفرستید:"),
+            "se_refereereward": ("set_refereereward", "💰 مبلغ پاداش نقدی (شارژ کیف پول) برای شخص دعوت‌شونده را ارسال کنید:"),
+            "se_rewardcode": ("set_rewardcode", "🔑 کد هدیه/جایزه را ارسال کنید (یا «-» برای غیرفعال‌سازی):"),
+            "se_rewardamt": ("set_rewardamt", "💰 مبلغ شارژ کیف پول برای کد جایزه را به تومان ارسال کنید:"),
         }
         state, prompt = prompts.get(d, (None, None))
         if state:
@@ -1476,7 +1769,10 @@ async def s_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     o = order_update(oid, status=ns)
     if o:
         txt = notif_get().get(ns, {}).get("to_user", "")
-        if txt: _notify_user(o["user_id"], txt)
+        if txt:
+            desc_str = f"\n📝 توضیحات: {o['description']}" if o.get('description') else ""
+            full_msg = f"{txt}\n\n📌 پروژه: {o['category_name']}{desc_str}"
+            _notify_user(o["user_id"], full_msg)
         if ns == "completed":
             p = get_or_create_payment(o)
             msg = (f"🎉 پروژه #{o['id']} تکمیل شد!\n"
@@ -1498,17 +1794,26 @@ async def f_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not fl:
         await q.answer("فایل یافت نشد"); return
     await q.answer("📎 در حال ارسال…")
+    if fl.get("chat_id") and fl.get("message_id"):
+        try:
+            await ctx.bot.forward_message(
+                chat_id=q.from_user.id,
+                from_chat_id=fl["chat_id"],
+                message_id=fl["message_id"]
+            )
+            return
+        except Exception:
+            pass
     try:
-        if fl.get("telegram_file_id"):
-            await ctx.bot.send_document(q.from_user.id, fl["telegram_file_id"], filename=fl["filename"])
-        else:
-            p = Path(fl["file_path"])
-            if p.exists():
-                with open(p, "rb") as fh:
-                    await ctx.bot.send_document(q.from_user.id, fh, filename=fl["filename"])
+        await ctx.bot.send_document(q.from_user.id, fl["telegram_file_id"], filename=fl.get("filename"))
     except Exception:
-        try: await ctx.bot.send_message(q.from_user.id, "⚠️ خطا در ارسال فایل.")
-        except: pass
+        try:
+            await ctx.bot.send_photo(q.from_user.id, fl["telegram_file_id"])
+        except Exception:
+            try:
+                await ctx.bot.send_message(q.from_user.id, "⚠️ خطا در ارسال فایل.")
+            except Exception:
+                pass
 
 async def r_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1531,6 +1836,25 @@ async def callback_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q: return
     d = q.data
+    if d == "wal_rewardcode":
+        await q.answer()
+        u = q.from_user
+        user_sessions[u.id] = {"state": "wal_enter_reward_code"}
+        await q.edit_message_text("🎁 لطفاً کد هدیه/جایزه خود را ارسال کنید (یا /cancel):")
+        return
+    if d.startswith("cosup_"):
+        await q.answer()
+        u = q.from_user
+        oid = d.replace("cosup_", "")
+        o = order_get(oid)
+        if not o:
+            await q.answer("سفارش یافت نشد", show_alert=True)
+            return
+        user_sessions[u.id] = {"state": "order_support_chat", "order_id": oid}
+        await q.edit_message_text(
+            f"💬 لطفاً پیام خود در رابطه با سفارش #{oid} ({o['category_name']}) را بنویسید و ارسال کنید (یا /cancel):"
+        )
+        return
     if d == "wal_topup":
         await q.answer()
         u = q.from_user
@@ -1688,6 +2012,11 @@ async def run_bot():
             app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all))
             app.add_error_handler(global_error_handler)
             await app.initialize()
+            try:
+                from telegram import MenuButtonCommands
+                await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            except Exception:
+                pass
             await app.start()
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
             log.info("🤖 Bot polling started | همه چیز داخل ربات")
