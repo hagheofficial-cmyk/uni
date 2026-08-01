@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ارتباط با ما | راهنمای آفلاین ربات</title>
+    <!-- کتابخانه تلگرام مینی‌اپ -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-main: #1f2937;
+            --text-sub: #4b5563;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --success: #10b981;
+            --success-hover: #059669;
+            --border: #e5e7eb;
+            --faq-bg: #f9fafb;
+        }
+        body {
+            font-family: Tahoma, Vazirmatn, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 16px;
+            line-height: 1.7;
+        }
+        .container {
+            max-width: 580px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08);
+            border: 1px solid var(--border);
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 20px;
+            margin-bottom: 24px;
+        }
+        .header-icon {
+            font-size: 48px;
+            margin-bottom: 8px;
+        }
+        .header h1 {
+            font-size: 22px;
+            margin: 0 0 6px 0;
+            color: var(--primary);
+            font-weight: 800;
+        }
+        .header p {
+            margin: 0;
+            color: var(--text-sub);
+            font-size: 14px;
+        }
+        .section {
+            margin-bottom: 28px;
+        }
+        .section-title {
+            font-size: 17px;
+            margin-bottom: 14px;
+            color: #111827;
+            display: flex;
+            align-items: center;
+            border-right: 4px solid var(--primary);
+            padding-right: 10px;
+            font-weight: bold;
+        }
+        .info-box {
+            background: var(--faq-bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 14px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .info-row:last-child {
+            margin-bottom: 0;
+        }
+        .btn {
+            display: block;
+            background: var(--primary);
+            color: #ffffff;
+            text-decoration: none;
+            padding: 12px 20px;
+            border-radius: 12px;
+            font-weight: bold;
+            text-align: center;
+            width: 100%;
+            box-sizing: border-box;
+            transition: background 0.2s ease;
+            box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);
+        }
+        .btn:hover {
+            background: var(--primary-hover);
+        }
+        .btn-channel {
+            background: var(--success);
+            box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.3);
+            margin-top: 10px;
+        }
+        .btn-channel:hover {
+            background: var(--success-hover);
+        }
+        .faq-item {
+            background: var(--faq-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+        .faq-question {
+            font-weight: bold;
+            color: var(--text-main);
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+        .faq-answer {
+            color: var(--text-sub);
+            font-size: 13px;
+            line-height: 1.8;
+            margin: 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 16px;
+            border-top: 1px dashed var(--border);
+            font-size: 12px;
+            color: #9ca3af;
+        }
+        .btn-close {
+            background: #ef4444;
+            margin-top: 20px;
+            box-shadow: none;
+        }
+        .btn-close:hover {
+            background: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- هدر صفحه -->
+        <div class="header">
+            <div class="header-icon">🎓</div>
+            <h1>ربات سفارش پروژه دانشگاهی</h1>
+            <p>راهنمای جامع، سؤالات متداول و ارتباط با پشتیبانی</p>
+        </div>
+
+        <!-- بخش اطلاعات تماس و پشتیبانی -->
+        <div class="section">
+            <div class="section-title">📞 ارتباط با پشتیبانی</div>
+            <div class="info-box">
+                <div class="info-row">
+                    <span>📱 تلفن پشتیبانی:</span>
+                    <strong dir="ltr">{{PHONE}}</strong>
+                </div>
+                <div class="info-row">
+                    <span>💬 آیدی تلگرام:</span>
+                    <strong dir="ltr">@{{TELEGRAM}}</strong>
+                </div>
+            </div>
+            <a href="https://t.me/{{TELEGRAM}}" target="_blank" class="btn">💬 شروع چت با پشتیبانی در تلگرام</a>
+        </div>
+
+        <!-- بخش کانال رسمی -->
+        <div class="section">
+            <div class="section-title">📢 کانال رسمی ما</div>
+            <div class="info-box">
+                <p style="margin: 0; font-size: 13px; color: var(--text-sub);">
+                    برای اطلاع از تخفیف‌های ویژه، کدهای هدیه، اطلاعیه‌ها و مشاهده نمونه‌کارها در کانال رسمی ما عضو شوید.
+                </p>
+            </div>
+            <a href="https://t.me/{{TELEGRAM}}" target="_blank" class="btn btn-channel">🔔 عضویت در کانال تلگرام</a>
+        </div>
+
+        <!-- بخش سؤالات متداول -->
+        <div class="section">
+            <div class="section-title">❓ سؤالات متداول (FAQ)</div>
+            
+            <div class="faq-item">
+                <div class="faq-question">۱. چگونه سفارش پروژه ثبت کنم؟</div>
+                <p class="faq-answer">
+                    از منوی اصلی ربات روی «📋 ثبت سفارش جدید» کلیک کنید. دسته‌بندی پروژه (مقاله، برنامه‌نویسی، پاورپوینت و...) را انتخاب کرده و توضیحات لازم را بنویسید؛ سپس فایل‌های مدارک را آپلود کرده و روی «اتمام آپلود» کلیک کنید.
+                </p>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">۲. پیش‌پرداخت و تسویه چگونه انجام می‌شود؟</div>
+                <p class="faq-answer">
+                    پس از بررسی و تعیین قیمت، می‌توانید نیمی از مبلغ را به عنوان پیش‌پرداخت واریز کرده و عکس رسید را در ربات ارسال کنید. پس از پایان کار، با واریز مبلغ نهایی، پروژه به طور کامل تحویل داده می‌شود.
+                </p>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">۳. چگونه از کدهای هدیه/جایزه استفاده کنم؟</div>
+                <p class="faq-answer">
+                    وارد بخش «💰 کیف پول» شده و دکمهٔ «🎁 ثبت کد هدیه/جایزه» را بزنید. کد اعلام‌شده در کانال را ارسال کنید تا کیف پول شما به طور خودکار شارژ شود.
+                </p>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">۴. آیا این صفحه بدون اینترنت هم باز می‌شود؟</div>
+                <p class="faq-answer">
+                    بله! این صفحه طراحی آفلاین دارد و شما می‌توانید فایل HTML آن را دانلود کرده و در هر زمان بدون اینترنت روی تلفن یا کامپیوتر خود مطالعه کنید.
+                </p>
+            </div>
+        </div>
+
+        <!-- دکمه بستن مینی‌اپ -->
+        <button onclick="closeWebApp()" class="btn btn-close">✖️ بستن پنجره</button>
+
+        <div class="footer">
+            تمامی حقوق محفوظ است © ۱۴۰۵
+        </div>
+    </div>
+
+    <script>
+        // آماده‌سازی تلگرام مینی‌اپ
+        function initWebApp() {
+            if (window.Telegram && window.Telegram.WebApp) {
+                Telegram.WebApp.ready();
+                Telegram.WebApp.expand();
+                
+                // هماهنگ‌سازی رنگ پس‌زمینه با تم تلگرام کاربر
+                if (Telegram.WebApp.themeParams && Telegram.WebApp.themeParams.bg_color) {
+                    document.documentElement.style.setProperty('--bg-color', Telegram.WebApp.themeParams.bg_color);
+                }
+            }
+        }
+
+        function closeWebApp() {
+            if (window.Telegram && window.Telegram.WebApp) {
+                Telegram.WebApp.close();
+            } else {
+                window.close();
+            }
+        }
+
+        initWebApp();
+    </script>
+</body>
+</html>
