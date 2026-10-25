@@ -1,7 +1,8 @@
 services:
   - type: web
-    name: uni-project-bot
+    name: bimeh-insurance-bot
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python3 main.py
     healthCheckPath: /
@@ -12,5 +13,21 @@ services:
         sync: false
       - key: BOT_USERNAME
         sync: false
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: AI_BASE_URL
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
       - key: WEBAPP_PORT
         value: "10000"
+      - key: DATABASE_PATH
+        value: "data/app.db"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
